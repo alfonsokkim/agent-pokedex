@@ -29,6 +29,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using UIA = System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
@@ -345,12 +346,19 @@ static class Agents
         var records = HookSessions.LiveRecords();
         return (herdr ?? new List<Agent>()).Concat(HookSessions.Agents(records, herdrRunning: herdr != null))
             .Select(agent => agent with { ContextUsed = Context.Used(agent, records) })
+            .Concat(ClaudeApp.Agents())
             .ToList();
     }
 
     /// Switches to an agent: through herdr for its panes, otherwise by bringing its terminal forward.
     public static void Focus(Agent agent)
     {
+        if (agent.Pane.StartsWith(ClaudeApp.Prefix))
+        {
+            var title = agent.Pane[ClaudeApp.Prefix.Length..];
+            Task.Run(() => ClaudeApp.Open(title)); // UI Automation stays off the UI thread
+            return;
+        }
         if (!agent.Pane.StartsWith(HookSessions.Prefix))
         {
             Herdr.Focus(agent.Pane);
@@ -465,6 +473,7 @@ static class Processes
 static class Win32
 {
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr window, int index);
@@ -501,6 +510,165 @@ static class Win32
     {
         GetCursorPos(out var p);
         return new Point(p.X, p.Y);
+    }
+}
+
+// MARK: - Claude app chats
+
+/// Chats in the Claude desktop app, read from its sidebar through UI
+/// Automation. A chat shows a "Running" status beside it while it replies;
+/// it's done when that goes. A chat gets a pet once it runs, and keeps it for
+/// a day after it last ran.
+static class ClaudeApp
+{
+    public const string Prefix = "app:";
+    static readonly string RanFile = Path.Combine(Paths.Data, "app-chats.json");
+
+    record Chat(string Title, string? Status, UIA.AutomationElement Row);
+
+    /// The Claude app's main process (it shares its name with the claude CLI, which has no window of its own).
+    static Process? Running() => Process.GetProcessesByName("Claude").FirstOrDefault(p =>
+    {
+        if (p.MainWindowHandle == IntPtr.Zero) return false;
+        try { return p.MainModule?.FileName.Contains("AnthropicClaude", StringComparison.OrdinalIgnoreCase) == true || p.MainWindowTitle == "Claude"; }
+        catch { return p.MainWindowTitle == "Claude"; }
+    });
+
+    static string Name(UIA.AutomationElement e)
+    {
+        try { return e.Current.Name ?? ""; }
+        catch { return ""; }
+    }
+
+    static List<UIA.AutomationElement> Children(UIA.AutomationElement e)
+    {
+        var kids = new List<UIA.AutomationElement>();
+        try
+        {
+            for (var c = UIA.TreeWalker.RawViewWalker.GetFirstChild(e); c != null; c = UIA.TreeWalker.RawViewWalker.GetNextSibling(c))
+                kids.Add(c);
+        }
+        catch { }
+        return kids;
+    }
+
+    static bool IsMenu(UIA.AutomationElement e) => Name(e).StartsWith("More options for");
+
+    /// The chats in the sidebar, top to bottom, and the one that's open. null when
+    /// the app isn't running, can't be read, or its sidebar is hidden or showing
+    /// Code sessions instead of chats.
+    static (List<Chat> Chats, string? Open)? Sidebar(Process app)
+    {
+        try
+        {
+            var root = UIA.AutomationElement.FromHandle(app.MainWindowHandle);
+            // Breadth-first to the sidebar, never into the conversation, which can be huge.
+            string? open = null;
+            UIA.AutomationElement? sidebar = null;
+            var queue = new Queue<UIA.AutomationElement>();
+            queue.Enqueue(root);
+            for (int visited = 0; queue.Count > 0 && visited < 400; visited++)
+            {
+                var e = queue.Dequeue();
+                var name = Name(e);
+                if (name.EndsWith(" - Claude") && e.Current.ControlType == UIA.ControlType.Document) open = name[..^" - Claude".Length];
+                if (name == "Sidebar")
+                {
+                    sidebar = e;
+                    break;
+                }
+                if (name == "Primary pane") continue;
+                foreach (var kid in Children(e)) queue.Enqueue(kid);
+            }
+            if (sidebar == null) return null;
+
+            var chats = new List<Chat>();
+            var titles = new HashSet<string>();
+            bool showingChats = true;
+            // A chat's row: a titled button, its "More options for …" menu, and while it runs a status.
+            void Walk(UIA.AutomationElement e, int depth)
+            {
+                if (depth > 25) return;
+                if (e.Current.ControlType == UIA.ControlType.RadioButton && Name(e) == "Claude" &&
+                    e.TryGetCurrentPattern(UIA.SelectionItemPattern.Pattern, out var selection))
+                    showingChats = ((UIA.SelectionItemPattern)selection).Current.IsSelected;
+                var kids = Children(e);
+                var button = kids.FirstOrDefault(k => k.Current.ControlType == UIA.ControlType.Button && Name(k).Length > 0 && !IsMenu(k));
+                if (button != null && kids.Any(k => IsMenu(k) || Children(k).Any(IsMenu)))
+                {
+                    var status = kids.FirstOrDefault(k => !ReferenceEquals(k, button) && !IsMenu(k) && Name(k).Length > 0 &&
+                        k.Current.ControlType != UIA.ControlType.Button && !Children(k).Any(IsMenu));
+                    if (titles.Add(Name(button))) chats.Add(new Chat(Name(button), status == null ? null : Name(status), button));
+                    return;
+                }
+                foreach (var kid in kids) Walk(kid, depth + 1);
+            }
+            Walk(sidebar, 0);
+            return showingChats ? (chats, open) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // Used only from the polling thread.
+    static readonly HashSet<string> running = new();
+    /// Chats that finished replying and haven't been opened since.
+    static readonly HashSet<string> finished = new();
+    /// What the chats were last time the sidebar could be read.
+    static List<Agent> latest = new();
+
+    /// Agents for chats that ran in the last day, in the sidebar's order.
+    public static List<Agent> Agents()
+    {
+        if (Running() is not Process app)
+        {
+            // Closed: they've all stopped.
+            running.Clear();
+            latest = latest.Select(a => a with { Status = a.Status == "done" ? "done" : "idle" }).ToList();
+            return latest;
+        }
+        if (Sidebar(app) is not { } sidebar) return latest; // hidden for now: keep what we knew
+        var (chats, open) = sidebar;
+        double now = Util.Now();
+        var viewing = Win32.GetForegroundWindow() == app.MainWindowHandle ? open : null;
+        var ran = Json.ReadObject(RanFile) ?? new JsonObject();
+        var agents = new List<Agent>();
+        foreach (var chat in chats)
+        {
+            var label = chat.Status?.ToLowerInvariant() ?? "";
+            var status = label.Length == 0 ? "idle"
+                : new[] { "input", "permission", "approv", "waiting" }.Any(label.Contains) ? "blocked"
+                : "working"; // "Running"
+            if (status != "idle")
+            {
+                ran[chat.Title] = now;
+                running.Add(chat.Title);
+            }
+            else if (running.Remove(chat.Title)) finished.Add(chat.Title);
+            if (viewing == chat.Title) finished.Remove(chat.Title);
+            if (now - Json.Num(ran[chat.Title]) >= 86_400) continue;
+            agents.Add(new Agent(Prefix + chat.Title, status == "idle" && finished.Contains(chat.Title) ? "done" : status, "", chat.Title));
+        }
+        foreach (var old in ran.Where(r => now - Json.Num(r.Value) >= 86_400).Select(r => r.Key).ToList()) ran.Remove(old);
+        try { Json.WriteAtomic(RanFile, ran.ToJsonString()); } catch { }
+        latest = agents;
+        return agents;
+    }
+
+    /// Brings the Claude app forward on a chat, by pressing its row in the sidebar.
+    public static void Open(string title)
+    {
+        if (Running() is not Process app) return;
+        try
+        {
+            if (Sidebar(app)?.Chats.FirstOrDefault(c => c.Title == title)?.Row is UIA.AutomationElement row &&
+                row.TryGetCurrentPattern(UIA.InvokePattern.Pattern, out var invoke))
+                ((UIA.InvokePattern)invoke).Invoke();
+        }
+        catch { }
+        Win32.Focus(app.MainWindowHandle);
     }
 }
 

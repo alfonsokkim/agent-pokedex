@@ -109,16 +109,17 @@ send a message in a session that was already open to see its pet.
 
 ![Picking a Pokemon from the right-click menu](docs/picker.png)
 
-## Claude app chats (Mac)
+## Claude app chats
 
 Chats in the Claude desktop app get pets too. A chat's pet shows up when it
 starts replying, paces while it does, then jumps for joy over "*Pikachu* is
 done" until you open that chat. Clicking the pet opens the chat. A chat keeps
 its pet for a day after it last replied.
 
-The pets read the Claude app's sidebar through macOS's accessibility features,
-so Claude Pet needs to be turned on under System Settings → Privacy & Security
-→ Accessibility. It asks the first time it starts; if you skipped that,
+The pets read the Claude app's sidebar (never your conversations) through the
+system's accessibility features. On Windows that needs nothing from you. On a
+Mac, Claude Pet needs to be turned on under System Settings → Privacy &
+Security → Accessibility. It asks the first time it starts; if you skipped that,
 right-click a pet and choose **Show Claude App Chats…**. Because the app is
 built on your Mac, macOS may need you to switch it off and on again there after
 you reinstall or update.
