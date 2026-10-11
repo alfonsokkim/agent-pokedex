@@ -109,6 +109,20 @@ send a message in a session that was already open to see its pet.
 
 ![Picking a Pokemon from the right-click menu](docs/picker.png)
 
+## Claude app chats (Mac)
+
+Chats in the Claude desktop app get pets too. A chat's pet shows up when it
+starts replying, paces while it does, then jumps for joy over "*Pikachu* is
+done" until you open that chat. Clicking the pet opens the chat. A chat keeps
+its pet for a day after it last replied.
+
+The pets read the Claude app's sidebar through macOS's accessibility features,
+so Claude Pet needs to be turned on under System Settings → Privacy & Security
+→ Accessibility. It asks the first time it starts; if you skipped that,
+right-click a pet and choose **Show Claude App Chats…**. Because the app is
+built on your Mac, macOS may need you to switch it off and on again there after
+you reinstall or update.
+
 ## How it works
 
 Claude Code runs the app's own binary (`ClaudePet --hook`) in the background on
@@ -145,6 +159,9 @@ sprites and the pets' saved settings.
   Claude Code session so it reports in.
 - **A pet is stuck working or flashing:** send that session a message, or
   click the pet; its next hook event puts it right.
+- **No pets for Claude app chats:** check Claude Pet is on under System
+  Settings → Privacy & Security → Accessibility (switch it off and on after
+  an update), and that the Claude app's sidebar is open on Chats, not Code.
 - **The Mac build fails:** install or update Xcode's command-line tools with
   `xcode-select --install`, then run the installer again.
 - **Windows sprites are missing:** run install.cmd again; it retries any that

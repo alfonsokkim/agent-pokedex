@@ -17,6 +17,7 @@
 // sheet of every mood and the whole roster, for checking without a screen.
 
 import AppKit
+import ApplicationServices
 
 // MARK: - Roster and sprites
 
@@ -225,6 +226,10 @@ func hostApp(of pid: pid_t) -> NSRunningApplication? {
 
 /// Switches to an agent: through herdr for its panes, otherwise by bringing its terminal forward.
 func focus(_ agent: Agent) {
+    if agent.pane.hasPrefix(ClaudeApp.prefix) {
+        ClaudeApp.open(String(agent.pane.dropFirst(ClaudeApp.prefix.count)))
+        return
+    }
     guard agent.pane.hasPrefix(HookSessions.prefix) else {
         Herdr.focus(agent.pane)
         return
@@ -233,6 +238,184 @@ func focus(_ agent: Agent) {
     let app = agent.app.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
         ?? agent.pid.flatMap(hostApp(of:))
     app?.activate()
+}
+
+// MARK: - Claude app chats
+
+/// Chats in the Claude desktop app, read from its sidebar through the
+/// accessibility API, which needs the Accessibility permission. A chat shows a
+/// "Running" status beside it while it replies; it's done when that goes.
+/// A chat gets a pet once it runs, and keeps it for a day after it last ran.
+enum ClaudeApp {
+    static let bundleID = "com.anthropic.claudefordesktop"
+    static let prefix = "app:"
+
+    struct Chat {
+        let title: String
+        let status: String? // the status label beside it ("Running"), if any
+        let row: AXUIElement
+    }
+
+    static var installed: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
+
+    /// Asks once for the permission to read the Claude app, if it's installed.
+    static func askForAccessIfNeeded() {
+        guard installed, !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "askedAccessibility") else { return }
+        UserDefaults.standard.set(true, forKey: "askedAccessibility")
+        askForAccess()
+    }
+
+    /// The system's prompt, which points to Privacy & Security → Accessibility.
+    static func askForAccess() {
+        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+    }
+
+    // MARK: Reading the sidebar
+
+    /// The app whose accessibility tree has been switched on (Electron builds it only when asked).
+    private static var enabledFor: pid_t = 0
+    private static let keys = ["AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXChildren", "AXValue"]
+
+    /// Several attributes in one round trip, leaving out ones the element doesn't have.
+    static func values(_ element: AXUIElement, _ names: [String] = keys) -> [String: AnyObject] {
+        var list: CFArray?
+        guard AXUIElementCopyMultipleAttributeValues(element, names as CFArray, [], &list) == .success,
+              let values = list as? [AnyObject] else { return [:] }
+        var found: [String: AnyObject] = [:]
+        for (name, value) in zip(names, values) {
+            if CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError { continue }
+            found[name] = value
+        }
+        return found
+    }
+
+    /// The chats in the sidebar, top to bottom, and the one that's open. nil when
+    /// the app isn't running, can't be read, or its sidebar is hidden or showing
+    /// Code sessions instead of chats.
+    static func sidebar() -> (chats: [Chat], open: String?)? {
+        guard AXIsProcessTrusted(),
+              let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return nil }
+        let app = AXUIElementCreateApplication(running.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        if enabledFor != running.processIdentifier {
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            enabledFor = running.processIdentifier
+        }
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, "AXWindows" as CFString, &windows) == .success else { return nil }
+        for window in (windows as? [AXUIElement]) ?? [] {
+            // Breadth-first to the sidebar, never into the conversation, which can be huge.
+            var open: String?
+            var sidebar: AXUIElement?
+            var queue = [window]
+            var visited = 0
+            while !queue.isEmpty, visited < 400 {
+                let element = queue.removeFirst()
+                visited += 1
+                let v = values(element)
+                if v["AXRole"] as? String == "AXWebArea", let title = v["AXTitle"] as? String, title.hasSuffix(" - Claude") {
+                    open = String(title.dropLast(" - Claude".count))
+                }
+                let subrole = v["AXSubrole"] as? String
+                if subrole == "AXLandmarkMain" { continue }
+                if subrole == "AXLandmarkComplementary", v["AXDescription"] as? String == "Sidebar" {
+                    sidebar = element
+                    break
+                }
+                queue += (v["AXChildren"] as? [AXUIElement]) ?? []
+            }
+            guard let sidebar else { continue }
+
+            var chats: [Chat] = []
+            var titles = Set<String>()
+            var showingChats = true
+            func isMenu(_ v: [String: AnyObject]) -> Bool {
+                (v["AXDescription"] as? String)?.hasPrefix("More options for") == true
+            }
+            // A chat's row: a titled button, its "More options for …" menu, and while it runs a status.
+            func walk(_ element: AXUIElement, depth: Int) {
+                guard depth < 25 else { return }
+                let v = values(element)
+                if v["AXRole"] as? String == "AXRadioButton", v["AXDescription"] as? String == "Claude",
+                   let selected = v["AXValue"] as? NSNumber {
+                    showingChats = selected.boolValue
+                }
+                let kids = (v["AXChildren"] as? [AXUIElement]) ?? []
+                let parts = kids.map { (element: $0, v: values($0)) }
+                if let button = parts.first(where: { $0.v["AXRole"] as? String == "AXButton" && !(($0.v["AXTitle"] as? String) ?? "").isEmpty }),
+                   parts.contains(where: { isMenu($0.v) || ((($0.v["AXChildren"] as? [AXUIElement]) ?? []).contains { isMenu(values($0, ["AXDescription"])) }) }) {
+                    let title = button.v["AXTitle"] as? String ?? ""
+                    let status = parts.first { $0.v["AXSubrole"] as? String == "AXApplicationStatus" }
+                        .map { $0.v["AXDescription"] as? String ?? "" }
+                    if titles.insert(title).inserted { chats.append(Chat(title: title, status: status, row: button.element)) }
+                    return
+                }
+                for kid in kids { walk(kid, depth: depth + 1) }
+            }
+            walk(sidebar, depth: 0)
+            return showingChats ? (chats, open) : nil
+        }
+        return nil
+    }
+
+    // MARK: Chats as agents
+
+    /// When each chat last ran, kept across restarts.
+    private static var lastRan: [String: Double] {
+        get { UserDefaults.standard.dictionary(forKey: "appChats") as? [String: Double] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "appChats") }
+    }
+    private static var running = Set<String>()
+    /// Chats that finished replying and haven't been opened since.
+    private static var finished = Set<String>()
+    /// What the chats were last time the sidebar could be read.
+    private static var latest: [Agent] = []
+
+    /// Agents for chats that ran in the last day, in the sidebar's order.
+    static func agents() -> [Agent] {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            // Closed: they've all stopped.
+            running = []
+            latest = latest.map { Agent(pane: $0.pane, status: $0.status == "done" ? "done" : "idle", title: "", project: $0.project) }
+            return latest
+        }
+        guard let (chats, open) = sidebar() else { return latest } // hidden for now: keep what we knew
+        let now = Date().timeIntervalSince1970
+        let viewing = app.isActive ? open : nil
+        var ran = lastRan
+        var agents: [Agent] = []
+        for chat in chats {
+            let status: String
+            switch chat.status?.lowercased() {
+            case nil, "": status = "idle"
+            case let label? where ["input", "permission", "approv", "waiting"].contains(where: label.contains): status = "blocked"
+            default: status = "working" // "Running"
+            }
+            if status != "idle" {
+                ran[chat.title] = now
+                running.insert(chat.title)
+            } else if running.remove(chat.title) != nil {
+                finished.insert(chat.title)
+            }
+            if viewing == chat.title { finished.remove(chat.title) }
+            guard let last = ran[chat.title], now - last < 86_400 else { continue }
+            agents.append(Agent(pane: prefix + chat.title,
+                                status: status == "idle" && finished.contains(chat.title) ? "done" : status,
+                                title: "", project: chat.title))
+        }
+        let kept = ran.filter { now - $0.value < 86_400 }
+        if kept != lastRan { lastRan = kept }
+        latest = agents
+        return agents
+    }
+
+    /// Brings the Claude app forward on a chat, by pressing its row in the sidebar.
+    static func open(_ title: String) {
+        if let row = sidebar()?.chats.first(where: { $0.title == title })?.row {
+            AXUIElementPerformAction(row, kAXPressAction as CFString)
+        }
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.activate()
+    }
 }
 
 // MARK: - herdr
@@ -1142,6 +1325,11 @@ final class PetView: NSView {
         }
         lineUp.submenu = arrange
         menu.addItem(lineUp)
+        if ClaudeApp.installed && !AXIsProcessTrusted() {
+            let allow = NSMenuItem(title: "Show Claude App Chats…", action: #selector(allowClaudeApp), keyEquivalent: "")
+            allow.target = self
+            menu.addItem(allow)
+        }
         let size = NSMenuItem()
         size.view = SizeSlider(value: PetSize.saved) { [weak self] value in self?.onSize?(value) }
         menu.addItem(size)
@@ -1151,6 +1339,10 @@ final class PetView: NSView {
     }
 
     @objc func goToAgent() { clicked() }
+    @objc func allowClaudeApp() {
+        ClaudeApp.askForAccess()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
     @objc func setDirection(_ sender: NSMenuItem) {
         Arrangement.saved.vertical = sender.tag == 1
         onLineUp?()
@@ -1541,6 +1733,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ClaudeApp.askForAccessIfNeeded()
         // In .common mode so pets keep moving while a right-click menu is open.
         let animation = Timer(timeInterval: 0.125, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pets.values.forEach { $0.animate() } }
@@ -2077,8 +2270,8 @@ func renderSheet(to path: String) {
 func currentAgents() -> [Agent] {
     let herdr = Herdr.agents()
     let records = HookSessions.liveRecords()
-    var agents = (herdr ?? []) + HookSessions.agents(from: records, herdrRunning: herdr != nil)
-    for i in agents.indices {
+    var agents = (herdr ?? []) + HookSessions.agents(from: records, herdrRunning: herdr != nil) + ClaudeApp.agents()
+    for i in agents.indices where !agents[i].pane.hasPrefix(ClaudeApp.prefix) {
         agents[i].contextUsed = Context.used(by: agents[i], records: records)
     }
     return agents
