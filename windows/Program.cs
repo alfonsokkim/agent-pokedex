@@ -882,6 +882,8 @@ sealed class PetView : FrameworkElement
     SpriteSheet sheet;
 
     public Action<PetView>? OnMoved, OnPickPokemon, OnResize, OnHoverEnd;
+    /// Shift-dragging moves every pet: called with how far the mouse has gone, then null when it's let go.
+    public Action<Vector?>? OnDragAll;
     /// Once it has gone into its ball, to close up the gap; when it's coming
     /// back out, to make room and throw its ball in.
     public Action<PetView>? OnVanish, OnSummon;
@@ -1372,7 +1374,7 @@ sealed class PetView : FrameworkElement
 
     Point? dragStart;
     Point windowStart;
-    bool dragged;
+    bool dragged, draggingAll;
 
     bool Hovering
     {
@@ -1402,6 +1404,7 @@ sealed class PetView : FrameworkElement
         dragStart = CursorInPoints();
         windowStart = new Point(window.Left, window.Top);
         dragged = false;
+        draggingAll = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
         CaptureMouse();
         e.Handled = true;
     }
@@ -1412,6 +1415,11 @@ sealed class PetView : FrameworkElement
         var offset = CursorInPoints() - start;
         if (offset.Length > 3) dragged = true;
         if (!dragged) return;
+        if (draggingAll)
+        {
+            OnDragAll?.Invoke(offset);
+            return;
+        }
         window.Left = windowStart.X + offset.X;
         window.Top = windowStart.Y + offset.Y;
     }
@@ -1421,8 +1429,9 @@ sealed class PetView : FrameworkElement
         ReleaseMouseCapture();
         if (dragStart == null) return;
         dragStart = null;
-        if (dragged) OnMoved?.Invoke(this);
-        else Clicked();
+        if (!dragged) Clicked();
+        else if (draggingAll) OnDragAll?.Invoke(null);
+        else OnMoved?.Invoke(this);
         e.Handled = true;
     }
 
@@ -1722,6 +1731,8 @@ struct Arrangement
 {
     public bool Vertical;
     public Corner Corner;
+    /// How far the whole line-up has been Shift-dragged from its corner.
+    public Vector Offset;
 
     public bool OnLeft => Corner is Corner.TopLeft or Corner.BottomLeft;
     public bool AtTop => Corner is Corner.TopLeft or Corner.TopRight;
@@ -1741,12 +1752,23 @@ struct Arrangement
         {
             Vertical = Prefs.Get("lineUp", "direction") != "horizontal",
             Corner = Enum.TryParse<Corner>(Prefs.Get("lineUp", "corner"), out var corner) ? corner : Corner.BottomRight,
+            Offset = ParseVector(Prefs.Get("lineUp", "offset")),
         };
         set
         {
             Prefs.Set("lineUp", "direction", value.Vertical ? "vertical" : "horizontal");
             Prefs.Set("lineUp", "corner", value.Corner.ToString());
+            Prefs.Set("lineUp", "offset", FormattableString.Invariant($"{value.Offset.X},{value.Offset.Y}"));
         }
+    }
+
+    static Vector ParseVector(string? text)
+    {
+        var parts = text?.Split(',');
+        return parts?.Length == 2 &&
+            double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
+            double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+            ? new Vector(x, y) : default;
     }
 }
 
@@ -1912,8 +1934,12 @@ sealed class PetsController
                 OnLineUp = () =>
                 {
                     Prefs.Clear("positions");
+                    var arrangement = Arrangement.Saved;
+                    arrangement.Offset = default;
+                    Arrangement.Saved = arrangement;
                     Layout();
                 },
+                OnDragAll = DragAll,
                 OnResize = _ => Layout(),
                 OnSize = Resize,
                 OnHoverEnd = _ => Restack(),
@@ -1959,6 +1985,41 @@ sealed class PetsController
         Layout(); // the new Pokemon may be taller or shorter
     }
 
+    /// Where each visible pet's window was when a Shift-drag began, and how far it has gone.
+    Dictionary<string, Point>? groupStart;
+    Vector groupOffset;
+
+    /// Moves every visible pet with a Shift-drag. When it's let go, the line-up
+    /// keeps its new spot (pets coming and going still line up there), and pets
+    /// dragged off on their own keep theirs, moved by the same amount.
+    void DragAll(Vector? offset)
+    {
+        if (offset is not Vector by)
+        {
+            if (groupStart == null) return;
+            var arrangement = Arrangement.Saved;
+            arrangement.Offset += groupOffset;
+            Arrangement.Saved = arrangement;
+            foreach (var (pane, start) in groupStart)
+                if (pets.TryGetValue(pane, out var pet) && Prefs.Get("positions", pet.Pokemon) != null)
+                    Prefs.Set("positions", pet.Pokemon, FormattableString.Invariant($"{start.X + groupOffset.X},{start.Y + groupOffset.Y}"));
+            groupStart = null;
+            Layout();
+            return;
+        }
+        groupStart ??= windows.Where(w => pets.TryGetValue(w.Key, out var p) && !p.IsGone)
+            .ToDictionary(w => w.Key, w => new Point(w.Value.Left, w.Value.Top));
+        groupOffset = by;
+        foreach (var (pane, start) in groupStart)
+        {
+            if (!windows.TryGetValue(pane, out var window)) continue;
+            window.BeginAnimation(Window.LeftProperty, null);
+            window.BeginAnimation(Window.TopProperty, null);
+            window.Left = start.X + by.X;
+            window.Top = start.Y + by.Y;
+        }
+    }
+
     /// Resizes every pet for the Size slider; their windows fit them, and the line-up follows.
     void Resize(double value)
     {
@@ -1992,7 +2053,8 @@ sealed class PetsController
                 stack.Add((pet, window));
         }
         foreach (var (pet, _) in stack) pet.Pace = arrangement.Vertical ? PetView.ColumnPace : PetView.RowPace;
-        var origins = Stacking.Origins(stack.Select(s => s.Pet).ToList(), visible, arrangement);
+        var origins = Stacking.Origins(stack.Select(s => s.Pet).ToList(), visible, arrangement)
+            .Select(o => o + arrangement.Offset).ToList();
         // Last first, each brought in front of the next, so in a column a pet's
         // caption covers the z's rising from the one below.
         for (int i = stack.Count - 1; i >= 0; i--)

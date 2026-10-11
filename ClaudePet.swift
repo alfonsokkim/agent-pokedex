@@ -522,6 +522,8 @@ final class PetView: NSView {
     private var sheet: SpriteSheet
 
     var onMoved: ((PetView) -> Void)?
+    /// Shift-dragging moves every pet: called with how far the mouse has gone, then nil when it's let go.
+    var onDragAll: ((NSPoint?) -> Void)?
     var onChoosePokemon: ((PetView, String) -> Void)?
     var onLineUp: (() -> Void)?
     /// Called as the Size slider moves, with its value.
@@ -1012,6 +1014,7 @@ final class PetView: NSView {
     var dragStart: NSPoint?
     var windowStart: NSPoint?
     var dragged = false
+    var draggingAll = false
 
     /// Just the part of the window the pet covers: its sprite's real width
     /// from its top pixel down to its feet. Neighbours packed close together
@@ -1040,6 +1043,7 @@ final class PetView: NSView {
         dragStart = NSEvent.mouseLocation
         windowStart = window?.frame.origin
         dragged = false
+        draggingAll = event.modifierFlags.contains(.shift)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1047,13 +1051,16 @@ final class PetView: NSView {
         let now = NSEvent.mouseLocation
         let offset = NSPoint(x: now.x - dragStart.x, y: now.y - dragStart.y)
         if hypot(offset.x, offset.y) > 3 { dragged = true }
-        if dragged {
+        guard dragged else { return }
+        if draggingAll {
+            onDragAll?(offset)
+        } else {
             window.setFrameOrigin(NSPoint(x: windowStart.x + offset.x, y: windowStart.y + offset.y))
         }
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragged { onMoved?(self) } else { clicked() }
+        if !dragged { clicked() } else if draggingAll { onDragAll?(nil) } else { onMoved?(self) }
         dragStart = nil
     }
 
@@ -1348,6 +1355,8 @@ struct Arrangement {
 
     var vertical = true
     var corner = Corner.bottomRight
+    /// How far the whole line-up has been Shift-dragged from its corner.
+    var offset = NSPoint.zero
     var onLeft: Bool { corner == .topLeft || corner == .bottomLeft }
     var atTop: Bool { corner == .topLeft || corner == .topRight }
 
@@ -1356,11 +1365,13 @@ struct Arrangement {
         get {
             let defaults = UserDefaults.standard
             return Arrangement(vertical: defaults.string(forKey: "lineUp.direction") != "horizontal",
-                               corner: Corner(rawValue: defaults.string(forKey: "lineUp.corner") ?? "") ?? .bottomRight)
+                               corner: Corner(rawValue: defaults.string(forKey: "lineUp.corner") ?? "") ?? .bottomRight,
+                               offset: defaults.string(forKey: "lineUp.offset").map(NSPointFromString) ?? .zero)
         }
         set {
             UserDefaults.standard.set(newValue.vertical ? "vertical" : "horizontal", forKey: "lineUp.direction")
             UserDefaults.standard.set(newValue.corner.rawValue, forKey: "lineUp.corner")
+            UserDefaults.standard.set(NSStringFromPoint(newValue.offset), forKey: "lineUp.offset")
         }
     }
 }
@@ -1583,8 +1594,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.positions[pet.pokemon] = NSStringFromPoint(origin)
             }
             pet.onChoosePokemon = { [weak self] pet, name in self?.choose(name, for: pet) }
+            pet.onDragAll = { [weak self] offset in self?.dragAll(by: offset) }
             pet.onLineUp = { [weak self] in
                 self?.positions = [:]
+                Arrangement.saved.offset = .zero
                 self?.layout()
             }
             pet.onVanish = { [weak self] in self?.layout() }
@@ -1715,6 +1728,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    /// Where each visible pet's window was when a Shift-drag began, and how far it has gone.
+    var groupDrag: (start: [String: NSPoint], offset: NSPoint)?
+
+    /// Moves every visible pet with a Shift-drag. When it's let go, the line-up
+    /// keeps its new spot (pets coming and going still line up there), and pets
+    /// dragged off on their own keep theirs, moved by the same amount.
+    func dragAll(by offset: NSPoint?) {
+        guard let offset else {
+            guard let drag = groupDrag else { return }
+            groupDrag = nil
+            var arrangement = Arrangement.saved
+            arrangement.offset.x += drag.offset.x
+            arrangement.offset.y += drag.offset.y
+            Arrangement.saved = arrangement
+            var saved = positions
+            for (pane, start) in drag.start {
+                guard let pet = pets[pane], saved[pet.pokemon] != nil else { continue }
+                saved[pet.pokemon] = NSStringFromPoint(NSPoint(x: start.x + drag.offset.x, y: start.y + drag.offset.y))
+            }
+            positions = saved
+            layout()
+            return
+        }
+        let start = groupDrag?.start ?? panels.filter { pets[$0.key]?.isGone == false }.mapValues(\.frame.origin)
+        groupDrag = (start, offset)
+        for (pane, origin) in start {
+            panels[pane]?.setFrameOrigin(NSPoint(x: origin.x + offset.x, y: origin.y + offset.y))
+        }
+    }
+
     /// Resizes every pet for the Size slider, keeping each one's feet where they were.
     func resize(to value: CGFloat) {
         PetSize.saved = value
@@ -1756,6 +1799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Last first, each ordered in front of the next, so in a column a pet's
         // caption covers the z's rising from the one below, and they pass behind it.
         let origins = stackOrigins(stack.map(\.pet), in: visible, arrangement: arrangement)
+            .map { NSPoint(x: $0.x + arrangement.offset.x, y: $0.y + arrangement.offset.y) }
         for ((_, panel), origin) in zip(stack, origins).reversed() {
             move(panel, to: origin, animated: animated)
             panel.orderFrontRegardless()

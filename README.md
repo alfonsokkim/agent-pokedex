@@ -88,6 +88,8 @@ send a message in a session that was already open to see its pet.
 - **Click** a pet to jump to its session: it brings that terminal forward, and
   clears the "is done".
 - **Drag** a pet anywhere. It stays where you leave it.
+- **Shift-drag** any pet to move them all together. The line-up keeps its new
+  spot, so pets that come and go still line up there.
 - **Hover** over a pet to see which project it belongs to, and a CTX bar in
   the style of FireRed's HP bar showing how much of its session's context
   window is left. It drains from green to yellow to red, and once a session
