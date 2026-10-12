@@ -1335,7 +1335,10 @@ final class PetView: NSView {
         menu.addItem(size)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Claude Pet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        // Pinned to the screen where you clicked, not to this window: the Size
+        // slider moves the windows, and a menu attached to one would move too,
+        // sliding the slider out from under the mouse.
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     @objc func goToAgent() { clicked() }
