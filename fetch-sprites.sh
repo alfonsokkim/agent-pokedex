@@ -11,7 +11,7 @@ mkdir -p "$dir"
 for name in bulbasaur charmander squirtle pikachu oddish psyduck poliwag abra geodude \
   slowpoke gastly gengar cubone magikarp gyarados lapras ditto \
   eevee vaporeon jolteon flareon espeon umbreon leafeon glaceon sylveon \
-  kabuto snorlax articuno zapdos moltres dragonite; do
+  kabuto snorlax articuno zapdos moltres dragonite sentret wooper quagsire; do
   [[ -s "$dir/$name.png" ]] && continue
   curl -fsSL "$base/$name/overworld.png" -o "$dir/$name.png" || { rm -f "$dir/$name.png"; echo "missing: $name"; }
 done

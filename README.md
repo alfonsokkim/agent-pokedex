@@ -15,9 +15,9 @@ waiting on you, and which one just finished.
 | Idle | Steps in place, then falls asleep with z's drifting up |
 | Untouched for 12 hours | Glows red and shrinks away into its Poke Ball, out of sight. When its session gets busy again, the ball is thrown in from the edge of the screen and it pops back out |
 
-Each session gets its own Pokemon and keeps it. There are 32 to choose from,
+Each session gets its own Pokemon and keeps it. There are 35 to choose from,
 including the starters, Pikachu, Gengar, Snorlax, every Eevee evolution, the
-legendary birds and Dragonite.
+legendary birds, Dragonite, Sentret, Wooper and Quagsire.
 
 ## Download
 

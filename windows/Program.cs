@@ -213,7 +213,7 @@ static class Roster
         "bulbasaur", "charmander", "squirtle", "pikachu", "oddish", "psyduck", "poliwag", "abra",
         "geodude", "slowpoke", "gastly", "gengar", "cubone", "magikarp", "gyarados", "lapras", "ditto",
         "eevee", "vaporeon", "jolteon", "flareon", "espeon", "umbreon", "leafeon", "glaceon", "sylveon",
-        "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite",
+        "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite", "sentret", "wooper", "quagsire",
     };
 
     public static string Display(string name) => char.ToUpperInvariant(name[0]) + name[1..];

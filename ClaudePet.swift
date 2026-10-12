@@ -25,7 +25,7 @@ let roster = [
     "bulbasaur", "charmander", "squirtle", "pikachu", "oddish", "psyduck", "poliwag", "abra",
     "geodude", "slowpoke", "gastly", "gengar", "cubone", "magikarp", "gyarados", "lapras", "ditto",
     "eevee", "vaporeon", "jolteon", "flareon", "espeon", "umbreon", "leafeon", "glaceon", "sylveon",
-    "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite",
+    "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite", "sentret", "wooper", "quagsire",
 ]
 
 /// A follower sheet: square frames for down ×2, up ×2, left ×2, and
