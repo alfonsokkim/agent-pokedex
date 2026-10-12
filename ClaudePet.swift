@@ -121,12 +121,40 @@ struct SpriteSheet {
 /// FireRed's overworld item ball (16×16), thrown in to bring a resting pet back.
 let pokeball = SpriteSheet.frames(in: "\(SpriteSheet.directory)/_pokeball.png")?.first
 
+/// Sprites blown up by a whole number with hard pixel edges, for drawing at
+/// in-between sizes: scaled the last little way smoothly from there, every
+/// pixel stays an even square with just its edges softened, rather than some
+/// pixels coming out a screen pixel bigger than their neighbours.
+private var sharpened: [ObjectIdentifier: (factor: Int, image: CGImage)] = [:]
+
+private func sharpened(_ image: CGImage, by factor: Int) -> CGImage {
+    if let cached = sharpened[ObjectIdentifier(image)], cached.factor == factor { return cached.image }
+    let w = image.width * factor, h = image.height * factor
+    guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+    context.interpolationQuality = .none
+    context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    guard let big = context.makeImage() else { return image }
+    sharpened[ObjectIdentifier(image)] = (factor, big)
+    return big
+}
+
 /// Draws a sprite with crisp pixels into a flipped view, optionally mirrored or faded.
 func drawPixelSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool = false, alpha: CGFloat = 1) {
     guard let context = NSGraphicsContext.current?.cgContext else { return }
     context.saveGState()
-    context.interpolationQuality = .none
     context.setAlpha(alpha)
+    // Screen pixels per sprite pixel. A whole number draws pixel for pixel; anything
+    // in between goes through a sharpened copy.
+    let device = abs(context.userSpaceToDeviceSpaceTransform.a) * rect.width / CGFloat(image.width)
+    var source = image
+    if abs(device - device.rounded()) < 0.01 {
+        context.interpolationQuality = .none
+    } else {
+        source = sharpened(image, by: max(1, Int(device)))
+        context.interpolationQuality = .high
+    }
     // The view is flipped; flip back so the image draws upright.
     context.translateBy(x: rect.minX, y: rect.maxY)
     context.scaleBy(x: 1, y: -1)
@@ -134,7 +162,7 @@ func drawPixelSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool = false, 
         context.translateBy(x: rect.width, y: 0)
         context.scaleBy(x: -1, y: 1)
     }
-    context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+    context.draw(source, in: CGRect(origin: .zero, size: rect.size))
     context.restoreGState()
 }
 
@@ -665,8 +693,8 @@ enum PetSize {
     /// The slider's value, pulled onto a size when it's close to one.
     static func settle(_ value: CGFloat) -> CGFloat { locks.first { abs($0 - value) <= pull } ?? value }
 
-    /// Points per sprite pixel: whole pixels on a Retina screen, so the pixel art stays crisp.
-    static func scale(for value: CGFloat) -> CGFloat { (value * 2).rounded() / 2 }
+    /// Points per sprite pixel: any size, following the slider smoothly (see drawPixelSprite).
+    static func scale(for value: CGFloat) -> CGFloat { value }
 }
 
 final class PetView: NSView {
@@ -2407,6 +2435,9 @@ struct ClaudePet {
         if args.contains(where: { $0.hasPrefix("--render") }) {
             PetView.recordsActivity = false
             PetView.scale = PetSize.medium // the docs show the default size
+            if let i = args.firstIndex(of: "--scale"), i + 1 < args.count, let value = Double(args[i + 1]) {
+                PetView.scale = CGFloat(value)
+            }
         }
         if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
             renderSheet(to: args[i + 1])
