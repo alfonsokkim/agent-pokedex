@@ -1634,7 +1634,8 @@ func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangemen
     }
 
     let room = visible.height - stackBase - stackTop - heights.reduce(0, +) - CGFloat(pets.count) * PetView.captionDepth
-    let gap = pets.count > 1 ? max(0, min(stackGap, room / CGFloat(pets.count - 1))) : 0
+    // Too tall for the screen even with no gap: they close up and overlap a little rather than run off it.
+    let gap = pets.count > 1 ? min(stackGap, room / CGFloat(pets.count - 1)) : 0
     let x = { (pet: PetView) in
         panelX(pet, spriteLeft: onLeft ? visible.minX + stackMargin : visible.maxX - stackMargin - pet.spriteSize)
     }
@@ -1657,6 +1658,26 @@ func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangemen
         origins.reverse()
     }
     return origins
+}
+
+/// Moves a line-up back onto the screen if any of it spills past an edge (it
+/// grew, or was Shift-dragged too far), keeping its shape: everything shifts
+/// the other way by just as much as it overhangs.
+func keepOnScreen(_ pets: [PetView], _ origins: [NSPoint], in visible: NSRect) -> [NSPoint] {
+    guard !pets.isEmpty else { return origins }
+    // What each one covers: from the top of its head down to its caption, as wide as it reaches.
+    let covered = zip(pets, origins).map { pet, origin -> NSRect in
+        let ground = origin.y + PetView.bottomPad
+        let middle = origin.x + pet.homeX + pet.spriteSize / 2
+        return NSRect(x: middle - pet.footprintWidth / 2, y: ground - PetView.captionDepth,
+                      width: pet.footprintWidth, height: pet.visibleHeight + PetView.captionDepth)
+    }
+    let all = covered.dropFirst().reduce(covered[0]) { $0.union($1) }
+    var dx: CGFloat = 0, dy: CGFloat = 0
+    if all.minX < visible.minX { dx = visible.minX - all.minX } else if all.maxX > visible.maxX { dx = visible.maxX - all.maxX }
+    // If it's taller than the screen, keep the top on it.
+    if all.maxY > visible.maxY { dy = visible.maxY - all.maxY } else if all.minY < visible.minY { dy = visible.minY - all.minY }
+    return origins.map { NSPoint(x: $0.x + dx, y: $0.y + dy) }
 }
 
 // MARK: - App
@@ -2022,8 +2043,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (pet, _) in stack { pet.pace = arrangement.vertical ? PetView.columnPace : PetView.rowPace }
         // Last first, each ordered in front of the next, so in a column a pet's
         // caption covers the z's rising from the one below, and they pass behind it.
-        let origins = stackOrigins(stack.map(\.pet), in: visible, arrangement: arrangement)
+        var origins = stackOrigins(stack.map(\.pet), in: visible, arrangement: arrangement)
             .map { NSPoint(x: $0.x + arrangement.offset.x, y: $0.y + arrangement.offset.y) }
+        origins = keepOnScreen(stack.map(\.pet), origins, in: visible)
         for ((_, panel), origin) in zip(stack, origins).reversed() {
             move(panel, to: origin, animated: animated)
             panel.orderFrontRegardless()
