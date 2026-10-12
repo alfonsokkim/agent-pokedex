@@ -2189,13 +2189,17 @@ func renderPicker(to path: String) {
               bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
           let context = NSGraphicsContext(bitmapImageRep: canvas) else { return }
-    grid.cacheDisplay(in: grid.bounds, to: rep)
+    // In light mode whatever the Mac is set to, so the names are dark on the white.
+    let light = NSAppearance(named: .aqua)!
+    grid.appearance = light
+    light.performAsCurrentDrawingAppearance { grid.cacheDisplay(in: grid.bounds, to: rep) }
     let rect = NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     NSColor.white.setFill()
     rect.fill()
-    rep.draw(in: rect)
+    // Over the white, not in place of it (a plain draw copies the clear pixels across).
+    rep.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
     NSGraphicsContext.restoreGraphicsState()
     try? canvas.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
 }
