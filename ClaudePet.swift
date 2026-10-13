@@ -1761,6 +1761,13 @@ final class PetPanel: NSPanel {
     /// sit in the middle of mostly empty windows (room for jumps and captions),
     /// and macOS would otherwise push a window at the edge onto its neighbour.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    /// Shows or hides it without taking it off screen. A window taken off and
+    /// put back lands on only the Space you're on at the time, not all of them.
+    func setShown(_ shown: Bool) {
+        alphaValue = shown ? 1 : 0
+        ignoresMouseEvents = !shown
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -1901,7 +1908,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.animationBehavior = .none // it comes and goes with its own animations
         panel.contentView = pet
-        if !pet.isGone { panel.orderFrontRegardless() }
+        panel.orderFrontRegardless()
+        panel.setShown(!pet.isGone)
         return panel
     }
 
@@ -1925,6 +1933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// comes out where it lands.
     func throwBall(for pet: PetView) {
         guard let panel = panels[pet.agent.pane], panel.contentView === pet else { return pet.land() }
+        panel.setShown(true)
         panel.orderFrontRegardless()
         let landing = panel.convertToScreen(pet.convert(pet.ballRect(pokeball), to: nil))
         guard let ball = pokeball,
@@ -2029,13 +2038,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let pet = pets[pane], let panel = panels[pane] else { continue }
             if pet.isGone {
                 // Out of sight, taking no room; it's put straight in place when it comes back.
-                panel.orderOut(nil)
+                panel.setShown(false)
                 placed.remove(ObjectIdentifier(panel))
                 continue
             }
             if let point = saved[pet.pokemon].map(NSPointFromString),
                NSScreen.screens.contains(where: { $0.visibleFrame.contains(point) }) {
                 move(panel, to: point, animated: animated)
+                panel.setShown(true)
             } else {
                 stack.append((pet, panel))
             }
@@ -2048,6 +2058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         origins = keepOnScreen(stack.map(\.pet), origins, in: visible)
         for ((_, panel), origin) in zip(stack, origins).reversed() {
             move(panel, to: origin, animated: animated)
+            panel.setShown(true)
             panel.orderFrontRegardless()
         }
     }
