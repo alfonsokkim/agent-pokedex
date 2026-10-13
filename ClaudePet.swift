@@ -36,6 +36,9 @@ struct SpriteSheet {
     let top: Int
     /// The farthest any frame reaches from its centre column, for spacing pets in a row.
     let halfWidth: Int
+    /// Each frame's visible pixels, from its leftmost to rightmost and topmost
+    /// to bottommost, in pixels from the frame's top-left corner.
+    let boxes: [CGRect]
 
     static let directory = NSHomeDirectory() + "/.local/share/claude-pet/sprites"
     static var cache: [String: SpriteSheet] = [:]
@@ -43,33 +46,38 @@ struct SpriteSheet {
     static func named(_ name: String) -> SpriteSheet? {
         if let cached = cache[name] { return cached }
         guard let frames = frames(in: "\(directory)/\(name).png"), frames.count >= 6 else { return nil }
-        let extents = frames.map(visibleExtent)
+        let boxes = frames.map(visibleBox)
+        let extents = zip(frames, boxes).map { frame, box -> (top: Int, halfWidth: Int) in
+            let half = frame.width / 2
+            return box.isEmpty ? (frame.height, 0) : (Int(box.minY), max(half - Int(box.minX), Int(box.maxX) - half))
+        }
         let sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
-                                halfWidth: extents.map(\.halfWidth).max() ?? 0)
+                                halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
         cache[name] = sheet
         return sheet
     }
 
-    /// Where an image's visible pixels reach: the first row with any, and the
-    /// farthest they get from the centre column.
-    static func visibleExtent(of image: CGImage) -> (top: Int, halfWidth: Int) {
+    /// The smallest rectangle holding all of an image's visible pixels, in
+    /// pixels from its top-left corner (empty if it has none).
+    static func visibleBox(of image: CGImage) -> CGRect {
         let w = image.width, h = image.height
         guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
               let pixels = { context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
                              return context.data?.assumingMemoryBound(to: UInt8.self) }()
-        else { return (0, w / 2) }
-        var top = h, first = w, last = -1
+        else { return CGRect(x: 0, y: 0, width: w, height: h) }
+        var top = h, bottom = -1, first = w, last = -1
         for row in 0..<h {
             for x in 0..<w where pixels[(row * w + x) * 4 + 3] > 0 {
                 top = min(top, row)
+                bottom = max(bottom, row)
                 first = min(first, x)
                 last = max(last, x)
             }
         }
-        guard last >= 0 else { return (h, 0) }
-        return (top, max(w / 2 - first, last + 1 - w / 2))
+        guard last >= 0 else { return .zero }
+        return CGRect(x: first, y: top, width: last + 1 - first, height: bottom + 1 - top)
     }
 
     /// Decodes a row of square frames and makes the background (palette entry 0) transparent.
@@ -934,6 +942,7 @@ final class PetView: NSView {
             walkDirection = walkX > 0 ? -1 : 1
             walkX = abs(walkX) <= speed ? 0 : walkX + walkDirection * speed
         }
+        if hitBox != trackedBox { updateTrackingAreas() }
         needsDisplay = true
     }
 
@@ -948,6 +957,10 @@ final class PetView: NSView {
             }
         }
         if arriving || mood == .stored { return }
+        // Clicks go through fully clear pixels to the window below, so the gaps
+        // inside the hit box get a fill too faint to see.
+        NSColor(white: 0, alpha: 1 / 255).setFill()
+        hitBox.fill()
         let frames = sheet.frames
         let step = tick / 2 % 2
         var image = frames[tick / 6 % 2]
@@ -1227,23 +1240,43 @@ final class PetView: NSView {
     var dragged = false
     var draggingAll = false
 
-    /// Just the part of the window the pet covers: its sprite's real width
-    /// from its top pixel down to its feet. Neighbours packed close together
-    /// never share any of it.
-    var hoverRect: NSRect {
-        let half = CGFloat(sheet.halfWidth) * Self.scale
-        let top = ground - visibleHeight
-        return NSRect(x: homeX + spriteSize / 2 - half, y: top, width: 2 * half, height: visibleHeight)
+    /// The frames its current pose flips between, and whether they're drawn
+    /// mirrored, as draw(_:) picks them.
+    var pose: (frames: [Int], mirrored: Bool) {
+        guard walkX != 0 || mood == .working else { return ([0, 1], false) }
+        let right = walkDirection > 0
+        if right && sheet.frames.count >= 8 { return ([6, 7], false) }
+        return ([4, 5], right)
+    }
+
+    /// The only part of the window that hovers and clicks: the tightest
+    /// rectangle around the pet's visible pixels in the pose it's in, where it
+    /// stands (hops don't move it, so it doesn't jump out from under the mouse).
+    var hitBox: NSRect {
+        let (frames, mirrored) = pose
+        let width = CGFloat(sheet.frames[0].width)
+        let box = frames.map { sheet.boxes[$0] }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
+        guard !box.isNull else { return .zero }
+        let left = mirrored ? width - box.maxX : box.minX
+        return NSRect(x: homeX + walkX + left * Self.scale, y: Self.spriteTop + box.minY * Self.scale,
+                      width: box.width * Self.scale, height: box.height * Self.scale)
+    }
+    private var trackedBox = NSRect.zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview else { return nil }
+        return hitBox.contains(convert(point, from: superview)) ? self : nil
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: hoverRect, options: [.mouseEnteredAndExited, .activeAlways],
+        trackedBox = hitBox
+        addTrackingArea(NSTrackingArea(rect: trackedBox, options: [.mouseEnteredAndExited, .activeAlways],
                                        owner: self))
         // The area may have shrunk out from under the mouse, which sends no exit.
         if let window {
-            hovering = hoverRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+            hovering = trackedBox.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         }
     }
 
