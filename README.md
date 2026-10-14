@@ -87,9 +87,10 @@ send a message in a session that was already open to see its pet.
   a Mac terminal.
 - **Click** a pet to jump to its session: it brings that terminal forward, and
   clears the "is done".
-- **Drag** a pet anywhere. It stays where you leave it.
-- **Shift-drag** any pet to move them all together. The line-up keeps its new
-  spot, so pets that come and go still line up there.
+- **Drag** a pet anywhere, including onto another display. It stays where you
+  leave it.
+- **Shift-drag** any pet to move them all together, onto another display too.
+  The line-up keeps its new spot, so pets that come and go still line up there.
 - **Hover** over a pet to see which project it belongs to, and a CTX bar in
   the style of FireRed's HP bar showing how much of its session's context
   window is left. It drains from green to yellow to red, and once a session
@@ -101,7 +102,8 @@ send a message in a session that was already open to see its pet.
   - **Return to Poke Ball**: put a pet away by hand. It's out of sight until
     its session gets busy, then its ball is thrown back in.
   - **Let Out**: call back any pet that's away.
-  - **Line Up Pets**: a column or a row, in any corner of the screen. Pets are
+  - **Line Up Pets**: a column or a row, in any corner of the display that pet
+    is on. Pets are
     spaced by their real size, so a Snorlax gets more room than a Pikachu, and
     ones that are away take no room at all.
   - **Size**: a slider from small to large, for when the pets are in the

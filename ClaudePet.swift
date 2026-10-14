@@ -1391,12 +1391,18 @@ final class PetView: NSView {
     }
     @objc func setDirection(_ sender: NSMenuItem) {
         Arrangement.saved.vertical = sender.tag == 1
-        onLineUp?()
+        lineUpHere()
     }
 
     @objc func setCorner(_ sender: NSMenuItem) {
         guard let corner = (sender.representedObject as? String).flatMap(Arrangement.Corner.init) else { return }
         Arrangement.saved.corner = corner
+        lineUpHere()
+    }
+
+    /// Lines everyone up again on the display this pet is on.
+    func lineUpHere() {
+        if let screen = window?.screen { Arrangement.saved.display = screen.displayID }
         onLineUp?()
     }
 }
@@ -1595,6 +1601,9 @@ struct Arrangement {
     var corner = Corner.bottomRight
     /// How far the whole line-up has been Shift-dragged from its corner.
     var offset = NSPoint.zero
+    /// The display it's on, once it has been Shift-dragged onto one; until
+    /// then (or while that display is unplugged), the one with the menu bar.
+    var display: CGDirectDisplayID?
     var onLeft: Bool { corner == .topLeft || corner == .bottomLeft }
     var atTop: Bool { corner == .topLeft || corner == .topRight }
 
@@ -1604,13 +1613,27 @@ struct Arrangement {
             let defaults = UserDefaults.standard
             return Arrangement(vertical: defaults.string(forKey: "lineUp.direction") != "horizontal",
                                corner: Corner(rawValue: defaults.string(forKey: "lineUp.corner") ?? "") ?? .bottomRight,
-                               offset: defaults.string(forKey: "lineUp.offset").map(NSPointFromString) ?? .zero)
+                               offset: defaults.string(forKey: "lineUp.offset").map(NSPointFromString) ?? .zero,
+                               display: (defaults.object(forKey: "lineUp.display") as? NSNumber)?.uint32Value)
         }
         set {
             UserDefaults.standard.set(newValue.vertical ? "vertical" : "horizontal", forKey: "lineUp.direction")
             UserDefaults.standard.set(newValue.corner.rawValue, forKey: "lineUp.corner")
             UserDefaults.standard.set(NSStringFromPoint(newValue.offset), forKey: "lineUp.offset")
+            UserDefaults.standard.set(newValue.display.map { NSNumber(value: $0) }, forKey: "lineUp.display")
         }
+    }
+
+    /// The screen it's on. Not NSScreen.main, which is whichever screen you're
+    /// working on and would send the line-up hopping between displays.
+    var screen: NSScreen? {
+        NSScreen.screens.first { $0.displayID == display } ?? NSScreen.screens.first
+    }
+}
+
+extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 }
 
@@ -1872,6 +1895,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         watchMouse()
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.layout(animated: false) }
+        }
         let polling = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -2060,6 +2087,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    /// Where a pet was dragged to, if it's still on a screen: judged by the
+    /// middle of the pet, since its window hangs well past it on every side.
+    func draggedSpot(of pet: PetView) -> NSPoint? {
+        guard let point = positions[pet.pokemon].map(NSPointFromString) else { return nil }
+        let middle = NSPoint(x: point.x + pet.frame.width / 2, y: point.y + PetView.bottomPad + pet.visibleHeight / 2)
+        return NSScreen.screens.contains { $0.frame.contains(middle) } ? point : nil
+    }
+
     /// Where each visible pet's window was when a Shift-drag began, and how far it has gone.
     var groupDrag: (start: [String: NSPoint], offset: NSPoint)?
 
@@ -2073,6 +2108,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var arrangement = Arrangement.saved
             arrangement.offset.x += drag.offset.x
             arrangement.offset.y += drag.offset.y
+            // Let go on another display, the line-up moves to it, staying where it was dropped.
+            let mouse = NSEvent.mouseLocation
+            if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }),
+               screen != arrangement.screen {
+                let stacked = order.compactMap { pets[$0] }.filter { !$0.isGone && draggedSpot(of: $0) == nil }
+                if let first = stacked.first, let start = drag.start[first.agent.pane] {
+                    var moved = arrangement
+                    moved.display = screen.displayID
+                    moved.offset = .zero
+                    let corner = stackOrigins(stacked, in: screen.visibleFrame, arrangement: moved)[0]
+                    moved.offset = NSPoint(x: start.x + drag.offset.x - corner.x, y: start.y + drag.offset.y - corner.y)
+                    arrangement = moved
+                }
+            }
             Arrangement.saved = arrangement
             var saved = positions
             for (pane, start) in drag.start {
@@ -2108,9 +2157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Puts dragged pets where they were left, and lines the rest up in agent
     /// order as chosen under Line Up Pets (by default a column in the bottom-right corner).
     func layout(animated: Bool = true) {
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let arrangement = Arrangement.saved
-        let saved = positions
+        let visible = arrangement.screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         var stack: [(pet: PetView, panel: PetPanel)] = []
         for pane in order {
             guard let pet = pets[pane], let panel = panels[pane] else { continue }
@@ -2120,8 +2168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 placed.remove(ObjectIdentifier(panel))
                 continue
             }
-            if let point = saved[pet.pokemon].map(NSPointFromString),
-               NSScreen.screens.contains(where: { $0.visibleFrame.contains(point) }) {
+            if let point = draggedSpot(of: pet) {
                 move(panel, to: point, animated: animated)
                 panel.setShown(true)
             } else {
