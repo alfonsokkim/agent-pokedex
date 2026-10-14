@@ -818,7 +818,6 @@ final class PetView: NSView {
     /// Matches the view's height to its sprite at the current size.
     func fitSize() {
         setFrameSize(NSSize(width: Self.width, height: Self.height(for: sheet)))
-        updateTrackingAreas()
         needsDisplay = true
     }
 
@@ -883,7 +882,6 @@ final class PetView: NSView {
         arriving = false
         transition = Transition(kind: .release, start: tick)
         hopUntil = Date().addingTimeInterval(1.6) // a happy hop once it's out
-        updateTrackingAreas()
         needsDisplay = true
     }
 
@@ -942,7 +940,6 @@ final class PetView: NSView {
             walkDirection = walkX > 0 ? -1 : 1
             walkX = abs(walkX) <= speed ? 0 : walkX + walkDirection * speed
         }
-        if hitBox != trackedBox { updateTrackingAreas() }
         needsDisplay = true
     }
 
@@ -957,10 +954,6 @@ final class PetView: NSView {
             }
         }
         if arriving || mood == .stored { return }
-        // Clicks go through fully clear pixels to the window below, so the gaps
-        // inside the hit box get a fill too faint to see.
-        NSColor(white: 0, alpha: 1 / 255).setFill()
-        hitBox.fill()
         let frames = sheet.frames
         let step = tick / 2 % 2
         var image = frames[tick / 6 % 2]
@@ -1261,27 +1254,16 @@ final class PetView: NSView {
         return NSRect(x: homeX + walkX + left * Self.scale, y: Self.spriteTop + box.minY * Self.scale,
                       width: box.width * Self.scale, height: box.height * Self.scale)
     }
-    private var trackedBox = NSRect.zero
+    /// The hit box on screen, for AppDelegate.trackMouse().
+    var screenHitBox: NSRect? {
+        guard let window else { return nil }
+        return window.convertToScreen(convert(hitBox, to: nil))
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let superview else { return nil }
         return hitBox.contains(convert(point, from: superview)) ? self : nil
     }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        trackedBox = hitBox
-        addTrackingArea(NSTrackingArea(rect: trackedBox, options: [.mouseEnteredAndExited, .activeAlways],
-                                       owner: self))
-        // The area may have shrunk out from under the mouse, which sends no exit.
-        if let window {
-            hovering = trackedBox.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
-        }
-    }
-
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
 
     override func mouseDown(with event: NSEvent) {
         dragStart = NSEvent.mouseLocation
@@ -1837,6 +1819,12 @@ final class PetPanel: NSPanel {
         set { UserDefaults.standard.set(newValue, forKey: "hidden") }
     }
     private var wantsShown = true
+    /// Whether the mouse is over its pet's hit box. Only then does it take
+    /// clicks: a window that takes any takes them everywhere, clear parts and
+    /// all, covering whatever is under the empty room around its pet.
+    var mouseOver = false {
+        didSet { if mouseOver != oldValue { refreshShown() } }
+    }
 
     /// Shows or hides it without taking it off screen. A window taken off and
     /// put back lands on only the Space you're on at the time, not all of them.
@@ -1844,7 +1832,7 @@ final class PetPanel: NSPanel {
         wantsShown = shown
         let visible = shown && !Self.allHidden
         alphaValue = visible ? 1 : 0
-        ignoresMouseEvents = !visible
+        ignoresMouseEvents = !(visible && mouseOver)
     }
 
     /// Catches up with Hide Pets or Show Pets.
@@ -1878,8 +1866,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setUpMenuBar()
         // In .common mode so pets keep moving while a right-click menu is open.
         let animation = Timer(timeInterval: 0.125, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pets.values.forEach { $0.animate() } }
+            MainActor.assumeIsolated {
+                self?.pets.values.forEach { $0.animate() }
+                self?.trackMouse() // pets walk under a mouse that's still
+            }
         }
+        watchMouse()
         let polling = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -1991,6 +1983,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.hidesOnDeactivate = false
         panel.animationBehavior = .none // it comes and goes with its own animations
         panel.contentView = pet
+        panel.acceptsMouseMovedEvents = true // so trackMouse() hears the mouse leave it
         panel.orderFrontRegardless()
         panel.setShown(!pet.isGone)
         return panel
@@ -2148,6 +2141,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // MARK: Mouse
+
+    /// Watches the mouse everywhere, since a pet's window lets it through
+    /// until it's over the pet (see PetPanel.mouseOver).
+    func watchMouse() {
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
+                                           .leftMouseUp, .rightMouseUp]
+        NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trackMouse() }
+        }
+        NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.trackMouse()
+            return event
+        }
+    }
+
+    /// The pet whose hit box the mouse is in takes clicks and shows it's
+    /// hovered; every other window lets them through. Where boxes overlap, the
+    /// one in front wins: line-ups put earlier pets in front. Nothing changes
+    /// while a button is down, so a drag isn't cut off.
+    func trackMouse() {
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        let mouse = NSEvent.mouseLocation
+        var found = false
+        for pane in order {
+            guard let pet = pets[pane], let panel = panels[pane] else { continue }
+            let over = !found && !PetPanel.allHidden && !pet.isGone && !pet.arriving
+                && pet.screenHitBox?.contains(mouse) == true
+            found = found || over
+            panel.mouseOver = over
+            pet.hovering = over
+        }
+    }
+
     // MARK: Menu bar
 
     /// A Poké Ball in the menu bar, for every pet at once: Hide Pets / Show
@@ -2195,6 +2222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         PetPanel.allHidden.toggle()
         statusItem?.button?.appearsDisabled = PetPanel.allHidden
         panels.values.forEach { $0.refreshShown() }
+        trackMouse()
     }
 
     /// Every pet that isn't busy or waiting on you goes into its ball.
