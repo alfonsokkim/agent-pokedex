@@ -1715,6 +1715,42 @@ func keepOnScreen(_ pets: [PetView], _ origins: [NSPoint], in visible: NSRect) -
 
 // MARK: - App
 
+/// The menu bar icon: a Poké Ball, its top half solid and its bottom half
+/// open, split by a band with the button in the middle. A template image, so
+/// it matches the menu bar in light and dark mode.
+func menuBarBall() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+        let centre = NSPoint(x: 9, y: 9), radius: CGFloat = 7.25
+        func circle(_ r: CGFloat) -> NSBezierPath {
+            NSBezierPath(ovalIn: NSRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
+        }
+        func erase(_ draw: () -> Void) {
+            NSGraphicsContext.current?.compositingOperation = .clear
+            draw()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+        }
+        NSColor.black.set()
+        let top = NSBezierPath()
+        top.appendArc(withCenter: centre, radius: radius, startAngle: 0, endAngle: 180)
+        top.close()
+        top.fill()
+        let ring = circle(radius - 0.75)
+        ring.lineWidth = 1.5
+        ring.stroke()
+        // A thin gap under the solid top, then the band across the middle.
+        erase { NSRect(x: centre.x - radius + 1.5, y: centre.y + 0.75, width: 2 * radius - 3, height: 1).fill() }
+        NSRect(x: 1.75, y: centre.y - 0.75, width: 14.5, height: 1.5).fill()
+        // The button: a ring in a cleared circle.
+        erase { circle(3.5).fill() }
+        let button = circle(2.25)
+        button.lineWidth = 1.5
+        button.stroke()
+        return true
+    }
+    image.isTemplate = true
+    return image
+}
+
 /// A Poké Ball's flight from just off the side of the screen onto the spot
 /// where a pet comes out: from the right edge for a pet on the right half of
 /// the screen, the left otherwise. One high arc, spinning, then a small bounce.
@@ -1795,15 +1831,27 @@ final class PetPanel: NSPanel {
     /// and macOS would otherwise push a window at the edge onto its neighbour.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 
+    /// Hide Pets in the menu bar: every pet stays out of sight until Show Pets.
+    static var allHidden: Bool {
+        get { UserDefaults.standard.bool(forKey: "hidden") }
+        set { UserDefaults.standard.set(newValue, forKey: "hidden") }
+    }
+    private var wantsShown = true
+
     /// Shows or hides it without taking it off screen. A window taken off and
     /// put back lands on only the Space you're on at the time, not all of them.
     func setShown(_ shown: Bool) {
-        alphaValue = shown ? 1 : 0
-        ignoresMouseEvents = !shown
+        wantsShown = shown
+        let visible = shown && !Self.allHidden
+        alphaValue = visible ? 1 : 0
+        ignoresMouseEvents = !visible
     }
+
+    /// Catches up with Hide Pets or Show Pets.
+    func refreshShown() { setShown(wantsShown) }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pets: [String: PetView] = [:]      // by herdr pane
     var panels: [String: PetPanel] = [:]
     /// Panes in herdr's agent order, which matches its sidebar top to bottom.
@@ -1812,6 +1860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var placed: Set<ObjectIdentifier> = []
     var polling = false
     let defaults = UserDefaults.standard
+    var statusItem: NSStatusItem?
 
     /// Which Pokémon each herdr pane gets, kept across restarts.
     var assignments: [String: String] {
@@ -1826,6 +1875,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ClaudeApp.askForAccessIfNeeded()
+        setUpMenuBar()
         // In .common mode so pets keep moving while a right-click menu is open.
         let animation = Timer(timeInterval: 0.125, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pets.values.forEach { $0.animate() } }
@@ -1968,6 +2018,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let panel = panels[pet.agent.pane], panel.contentView === pet else { return pet.land() }
         panel.setShown(true)
         panel.orderFrontRegardless()
+        // While hidden, a ball would fly across the screen with no pet to land.
+        if PetPanel.allHidden { return pet.land() }
         let landing = panel.convertToScreen(pet.convert(pet.ballRect(pokeball), to: nil))
         guard let ball = pokeball,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: landing.midX, y: landing.midY)) })
@@ -2094,6 +2146,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setShown(true)
             panel.orderFrontRegardless()
         }
+    }
+
+    // MARK: Menu bar
+
+    /// A Poké Ball in the menu bar, for every pet at once: Hide Pets / Show
+    /// Pets, Return Idle Pets and Let Out All Pets.
+    func setUpMenuBar() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = menuBarBall()
+        item.button?.toolTip = "Claude Pet"
+        item.button?.appearsDisabled = PetPanel.allHidden
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        item.menu = menu
+        statusItem = item
+    }
+
+    /// Not busy and not waiting on you, as Return to Poké Ball allows.
+    func isIdle(_ pet: PetView) -> Bool {
+        !pet.isGone && pet.transition == nil && pet.mood != .working && pet.mood != .alert
+    }
+
+    /// Rebuilt each time it opens, so its counts are current.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let live = order.compactMap { pets[$0] }
+        let idle = live.filter(isIdle).count, resting = live.filter(\.isGone).count
+
+        func add(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        add(PetPanel.allHidden ? "Show Pets" : "Hide Pets", #selector(toggleHidden))
+        menu.addItem(.separator())
+        add(idle == 0 ? "Return Idle Pets" : "Return Idle Pets (\(idle))", #selector(returnIdle),
+            enabled: idle > 0 && !PetPanel.allHidden)
+        add(resting == 0 ? "Let Out All Pets" : "Let Out All Pets (\(resting))", #selector(letOutAll),
+            enabled: resting > 0 && !PetPanel.allHidden)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Claude Pet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    @objc func toggleHidden() {
+        PetPanel.allHidden.toggle()
+        statusItem?.button?.appearsDisabled = PetPanel.allHidden
+        panels.values.forEach { $0.refreshShown() }
+    }
+
+    /// Every pet that isn't busy or waiting on you goes into its ball.
+    @objc func returnIdle() {
+        pets.values.filter(isIdle).forEach { $0.returnToBall() }
+    }
+
+    /// Every pet that's away comes back out, their balls thrown in together.
+    @objc func letOutAll() {
+        for pane in order where pets[pane]?.isGone == true { pets[pane]?.wake() }
     }
 
     /// Slides a panel that's already on screen; puts a new one straight in place.

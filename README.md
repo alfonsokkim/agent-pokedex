@@ -107,6 +107,13 @@ send a message in a session that was already open to see its pet.
   - **Size**: a slider from small to large, for when the pets are in the
     way. It holds for a moment at Small, Medium and Large as you drag it.
 
+- **The Poke Ball in the menu bar** (Mac) works on every pet at once:
+  - **Hide Pets** / **Show Pets**: get them all off the screen, say for a
+    screen share, and back again. They stay hidden until you show them.
+  - **Return Idle Pets**: put away every pet that isn't working or waiting
+    on you.
+  - **Let Out All Pets**: call back every pet that's away.
+
 ![Picking a Pokemon from the right-click menu](docs/picker.png)
 
 ## Claude app chats
