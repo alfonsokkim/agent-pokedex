@@ -133,6 +133,18 @@ right-click a pet and choose **Show Claude App Chats…**. Because the app is
 built on your Mac, macOS may need you to switch it off and on again there after
 you reinstall or update.
 
+## Conductor
+
+Every chat in [Conductor](https://conductor.build) gets a pet too, Claude Code
+and Codex alike, for as long as its workspace isn't archived. The pet paces
+while the chat works, is alarmed when it asks you a question, wants a plan
+approved or hits an error, and says it's done until you look at that chat.
+Clicking the pet brings Conductor forward on that workspace.
+
+The pets read Conductor's own list of chats on your Mac, nothing you have to set
+up. Jumping to the workspace uses the same Accessibility permission as the
+Claude app's chats; without it, clicking just brings Conductor forward. Mac only.
+
 ## How it works
 
 Claude Code runs the app's own binary (`ClaudePet --hook`) in the background on

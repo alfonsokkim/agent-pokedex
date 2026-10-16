@@ -18,6 +18,7 @@
 
 import AppKit
 import ApplicationServices
+import SQLite3
 
 // MARK: - Roster and sprites
 
@@ -266,6 +267,10 @@ func focus(_ agent: Agent) {
         ClaudeApp.open(String(agent.pane.dropFirst(ClaudeApp.prefix.count)))
         return
     }
+    if agent.pane.hasPrefix(Conductor.prefix) {
+        Conductor.open(String(agent.pane.dropFirst(Conductor.prefix.count)))
+        return
+    }
     guard agent.pane.hasPrefix(HookSessions.prefix) else {
         Herdr.focus(agent.pane)
         return
@@ -451,6 +456,133 @@ enum ClaudeApp {
             AXUIElementPerformAction(row, kAXPressAction as CFString)
         }
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.activate()
+    }
+}
+
+// MARK: - Conductor
+
+/// Chats in Conductor (conductor.build), Claude Code and Codex alike, read
+/// from the database it keeps them in. Every chat in a workspace that isn't
+/// archived gets a pet.
+enum Conductor {
+    static let bundleID = "com.conductor.app"
+    static let prefix = "conductor:"
+    static let database = NSHomeDirectory() + "/Library/Application Support/com.conductor.app/conductor.db"
+
+    struct Chat {
+        let id: String
+        let status: String          // idle, working, error, or needs_... when it's waiting on you
+        let live: [String: Any]     // what the chat is doing right now
+        let agentType: String       // claude, codex, ...
+        let claudeSession: String
+        let unread: Int
+        let contextPercent: Double?
+        let title: String
+        let workspace: String       // its id
+        let workspaceName: String
+    }
+
+    /// nil when Conductor isn't installed, or its database can't be read.
+    static func agents(records: [HookSessions.Record]) -> [Agent]? {
+        guard let chats = chats() else { return nil }
+        // Closed, nothing's running, whatever it last wrote.
+        let open = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+        let hooks = Dictionary(records.map { ($0.session, $0) }, uniquingKeysWith: { a, _ in a })
+        return chats.map { chat in
+            let hook = hooks[chat.claudeSession]
+            let waiting = !((chat.live["activeQuestions"] as? [Any]) ?? []).isEmpty
+                || !(chat.live["activeUserInteraction"] is NSNull || chat.live["activeUserInteraction"] == nil)
+                || !(chat.live["proposedPlan"] is NSNull || chat.live["proposedPlan"] == nil)
+                || hook?.status == "blocked"
+            let status: String
+            if !open { status = chat.unread > 0 ? "done" : "idle" }
+            else if waiting || chat.status == "error" || chat.status.hasPrefix("needs") {
+                status = "blocked" // a question, a plan to approve, or an error: it needs you either way
+            }
+            else if chat.live["status"] as? String == "working" || chat.status == "working" { status = "working" }
+            else { status = chat.unread > 0 ? "done" : "idle" } // unread until you look at it
+            var agent = Agent(pane: prefix + chat.id, status: status,
+                              title: chat.title == "Untitled" ? "" : chat.title,
+                              project: chat.workspaceName, app: bundleID)
+            agent.contextUsed = chat.contextPercent.flatMap { $0 > 0 ? $0 / 100 : nil }
+                ?? Context.used(transcript: hook?.transcript, model: hook?.model)
+            return agent
+        }
+    }
+
+    static func chats() -> [Chat]? {
+        guard FileManager.default.fileExists(atPath: database) else { return nil }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(database, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 200) // Conductor may be writing
+        let query = """
+            SELECT s.id, COALESCE(s.status, 'idle'), COALESCE(ss.live_state, ''), COALESCE(s.agent_type, ''),
+                   COALESCE(s.claude_session_id, ''), COALESCE(s.unread_count, 0), s.context_used_percent,
+                   COALESCE(s.title, ''), w.local_id,
+                   COALESCE(NULLIF(w.workspace_name, ''), NULLIF(w.directory_name, ''), '')
+            FROM sessions s
+            JOIN workspaces w ON w.local_id = s.workspace_id
+            LEFT JOIN session_state ss ON ss.session_id = s.id
+            WHERE COALESCE(s.is_hidden, 0) = 0 AND s.remote_archived_at IS NULL
+              AND COALESCE(w.state, '') != 'archived' AND COALESCE(w.DEPRECATED_archived, 0) = 0
+            ORDER BY s.created_at
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(statement) }
+        func text(_ i: Int32) -> String { sqlite3_column_text(statement, i).map { String(cString: $0) } ?? "" }
+        var chats: [Chat] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let live = (try? JSONSerialization.jsonObject(with: Data(text(2).utf8))) as? [String: Any] ?? [:]
+            chats.append(Chat(id: text(0), status: text(1), live: live, agentType: text(3), claudeSession: text(4),
+                              unread: Int(sqlite3_column_int(statement, 5)),
+                              contextPercent: sqlite3_column_type(statement, 6) == SQLITE_NULL
+                                  ? nil : sqlite3_column_double(statement, 6),
+                              title: text(7), workspace: text(8), workspaceName: text(9)))
+        }
+        return chats
+    }
+
+    /// Brings Conductor forward on the chat's workspace, by clicking its link
+    /// in the sidebar (which needs the Accessibility permission). Without it,
+    /// or with the sidebar closed, Conductor just comes forward.
+    static func open(_ chat: String) {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map {
+                NSWorkspace.shared.openApplication(at: $0, configuration: NSWorkspace.OpenConfiguration())
+            }
+            return
+        }
+        app.activate()
+        guard AXIsProcessTrusted() else { return }
+        DispatchQueue.global().async {
+            if let workspace = chats()?.first(where: { $0.id == chat })?.workspace,
+               let link = workspaceLink(workspace, in: AXUIElementCreateApplication(app.processIdentifier)) {
+                AXUIElementPerformAction(link, kAXPressAction as CFString)
+            }
+        }
+    }
+
+    /// The sidebar link to a workspace, whose address ends in /workspace/<its id>.
+    static func workspaceLink(_ workspace: String, in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
+        guard depth < 40 else { return nil }
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success,
+           value as? String == "AXLink",
+           AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &value) == .success,
+           (value as? URL)?.path.hasSuffix("/workspace/" + workspace) == true {
+            return element
+        }
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,
+              let children = value as? [AXUIElement] else { return nil }
+        for child in children {
+            if let link = workspaceLink(workspace, in: child, depth: depth + 1) { return link }
+        }
+        return nil
     }
 }
 
@@ -2557,11 +2689,14 @@ func renderSheet(to path: String) {
 func currentAgents() -> [Agent] {
     let herdr = Herdr.agents()
     let records = HookSessions.liveRecords()
-    var agents = (herdr ?? []) + HookSessions.agents(from: records, herdrRunning: herdr != nil) + ClaudeApp.agents()
+    let conductor = Conductor.agents(records: records)
+    // Conductor's Claude chats run the hooks too, but its own list covers them.
+    let hooked = conductor == nil ? records : records.filter { $0.app != Conductor.bundleID }
+    var agents = (herdr ?? []) + HookSessions.agents(from: hooked, herdrRunning: herdr != nil) + ClaudeApp.agents()
     for i in agents.indices where !agents[i].pane.hasPrefix(ClaudeApp.prefix) {
         agents[i].contextUsed = Context.used(by: agents[i], records: records)
     }
-    return agents
+    return agents + (conductor ?? [])
 }
 
 // MARK: - Context
@@ -2581,8 +2716,13 @@ enum Context {
         // A herdr pane that hasn't run a hook since the pets were installed is
         // found through its process instead.
         let path = record?.transcript ?? (agent.pane.hasPrefix(HookSessions.prefix) ? nil : paneTranscript(agent.pane))
+        return used(transcript: path, model: record?.model)
+    }
+
+    /// How full a transcript's context window is.
+    static func used(transcript path: String?, model: String?) -> Double? {
         guard let path, let tokens = tokens(in: path) else { return nil }
-        return Double(tokens) / Double(window(model: record?.model, tokens: tokens))
+        return Double(tokens) / Double(window(model: model, tokens: tokens))
     }
 
     /// Panes' transcripts found by process, re-checked every half minute.
