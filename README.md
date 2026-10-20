@@ -1,9 +1,9 @@
-# Claude Agent Pokédex
+# Claude and Codex Agent Pokédex
 
-A pixel Pokemon for every Claude Code session you have running, on a Mac or a
-Windows PC. They float at the edge of your screen and act out what their agent
-is doing, so you can tell at a glance which one is working, which one is
-waiting on you, and which one just finished.
+A pixel Pokemon for every Claude or Codex session you have running on a Mac.
+Claude Code is also supported on Windows. They float at the edge of your screen
+and act out what their agent is doing, so you can tell at a glance which one is
+working, which one is waiting on you, and which one just finished.
 
 ![Four pets in the corner of the screen while Claude Code works](docs/desktop.jpg)
 
@@ -15,9 +15,8 @@ waiting on you, and which one just finished.
 | Idle | Steps in place, then falls asleep with z's drifting up |
 | Untouched for 12 hours | Glows red and shrinks away into its Poke Ball, out of sight. When its session gets busy again, the ball is thrown in from the edge of the screen and it pops back out |
 
-Each session gets its own Pokemon and keeps it. There are 35 to choose from,
-including the starters, Pikachu, Gengar, Snorlax, every Eevee evolution, the
-legendary birds, Dragonite, Sentret, Wooper and Quagsire.
+Each session gets its own Pokemon and keeps it. All 649 Pokemon from Generations
+I through V are available in the Kanto, Johto, Hoenn, Sinnoh, and Unova pickers.
 
 ## Download
 
@@ -26,7 +25,9 @@ legendary birds, Dragonite, Sentret, Wooper and Quagsire.
 | **Mac** (macOS 14 or later) | [claude-agent-pokedex-mac.zip](https://github.com/alfonsokkim/claude-agent-pokedex/releases/latest/download/claude-agent-pokedex-mac.zip) |
 | **Windows** (Windows 10 or 11, 64-bit) | [claude-agent-pokedex-windows.zip](https://github.com/alfonsokkim/claude-agent-pokedex/releases/latest/download/claude-agent-pokedex-windows.zip) |
 
-Both need [Claude Code](https://claude.com/claude-code).
+The Mac app supports [Claude Code](https://claude.com/claude-code), the Codex
+CLI, Codex in the ChatGPT app, Conductor, and Orca. The Windows build currently
+supports Claude Code.
 
 ## Install on a Mac
 
@@ -50,12 +51,12 @@ cd claude-agent-pokedex
 
 The installer:
 
-1. downloads the sprites (they aren't shipped here, see [Sprites](#sprites))
+1. downloads all 649 Gen I to V sprites (they aren't shipped here, see [Sprites](#sprites))
 2. builds `Claude Pet.app` into `~/Applications`
 3. adds a `claude-pet` command and a `/pet` command for Claude Code
 4. adds a set of hooks to `~/.claude/settings.json` so each session can report
    its status, leaving your other settings exactly as they were
-5. starts the app
+5. starts the app. Codex sessions are discovered automatically and need no hooks
 
 Run it again any time, for example after a `git pull`. To start the pets when
 you log in, add **Claude Pet** under System Settings → General → Login Items.
@@ -80,8 +81,8 @@ a shortcut to `%LOCALAPPDATA%\ClaudePet\ClaudePet.exe` in that folder.
 
 ## Using it
 
-A pet appears for each Claude Code session as soon as it does something, so
-send a message in a session that was already open to see its pet.
+A pet appears for each Claude Code session as soon as it does something. Live
+Codex chats are found automatically through their local thread state.
 
 - **Summon or dismiss** the pets with `/pet` in Claude Code, or `claude-pet` in
   a Mac terminal.
@@ -97,15 +98,17 @@ send a message in a session that was already open to see its pet.
   is over 80% full the bar stays up without hovering.
 - **Right-click** a pet for:
   - **Go to Agent**
-  - **Pokemon**: pick a different one from a grid of every sprite. The ones
-    other sessions have are greyed out, and picking one swaps the two.
+  - **Pokemon**: open a generation and region submenu, then pick from its sprite
+    grid. The ones other sessions have are greyed out, and picking one swaps
+    the two.
   - **Return to Poke Ball**: put a pet away by hand. It's out of sight until
     its session gets busy, then its ball is thrown back in.
   - **Let Out**: call back any pet that's away.
   - **Line Up Pets**: a column or a row, in any corner of the display that pet
     is on. Pets are
     spaced by their real size, so a Snorlax gets more room than a Pikachu, and
-    ones that are away take no room at all.
+    ones that are away take no room at all. In a horizontal row, adjacent
+    completion captions alternate below and above the pets so they do not overlap.
   - **Size**: a slider from small to large, for when the pets are in the
     way. It holds for a moment at Small, Medium and Large as you drag it.
 
@@ -141,9 +144,28 @@ while the chat works, is alarmed when it asks you a question, wants a plan
 approved or hits an error, and says it's done until you look at that chat.
 Clicking the pet brings Conductor forward on that workspace.
 
+Conductor ordering follows its root section, project display order, and
+workspace activity. Projects with one active workspace use only the project
+name. Projects with multiple workspaces use `[project] [workspace]: chat title`.
+Generated city folder names are not shown when the real workspace name is
+available. A small orange spark marks Claude sessions and the blue Codex logo
+marks Codex sessions without adding another word to the label.
+
 The pets read Conductor's own list of chats on your Mac, nothing you have to set
 up. Jumping to the workspace uses the same Accessibility permission as the
 Claude app's chats; without it, clicking just brings Conductor forward. Mac only.
+
+## Codex
+
+Every live Codex thread gets a persistent Pokemon, whether it was opened with
+the `codex` command, in the ChatGPT app's Codex tab, in Conductor, or in Orca.
+The app reads Codex's local thread index and the writer lock held by each open
+chat. Closed historical chats are ignored, and Conductor threads are
+deduplicated against Conductor's richer status data.
+
+The pet follows turn starts and completions, user-input waits, the percentage
+of context remaining, and the host app. Clicking it clears the completion
+state and brings its terminal or desktop app forward.
 
 ## How it works
 
@@ -157,6 +179,9 @@ on Windows.
 Pressing Esc to deny a prompt or interrupt a turn doesn't fire a hook, so the
 app also checks the end of the session's transcript for the interrupt. A
 session that crashes is cleaned up by watching its Claude process.
+
+Codex uses its local state database and one live writer lock per open thread.
+Orca account-specific Codex homes are discovered alongside `~/.codex`.
 
 If you run your agents in [herdr](https://herdr.dev), the pets follow herdr's
 sidebar instead: they line up in the same order, and clicking one switches

@@ -23,6 +23,7 @@ case "$1" in
     pkill -x ClaudePet 2>/dev/null || true
     /usr/bin/osascript -l JavaScript "$here/hooks.js" "$settings" "$binary" remove
     rm -rf "$app" "$data/sprites" "$data/sessions"
+    rm -f "$data/pokemon.json"
     rm -f ~/.local/bin/claude-pet ~/.claude/commands/pet.md
     defaults delete com.alfonsokim.claude-pet 2>/dev/null || true
     echo "Uninstalled. This folder is untouched; delete it yourself if you like."
@@ -46,5 +47,5 @@ sed "s|__HOME__|$HOME|g" "$here/pet.md" > ~/.claude/commands/pet.md
 
 pkill -x ClaudePet 2>/dev/null || true
 open "$app"
-echo "Done. Your pets will appear as Claude Code sessions report in."
-echo "Toggle them with claude-pet in a terminal, or /pet in Claude Code."
+echo "Done. Claude and Codex chats will each keep their own Pokémon."
+echo "Toggle the pets with claude-pet in a terminal, or /pet in Claude Code."

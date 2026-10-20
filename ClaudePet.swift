@@ -1,5 +1,4 @@
-// Claude Pet — a floating Pokémon for every Claude Code agent you're running,
-// in the spirit of the Codex desktop pet.
+// Claude Pet, a floating Pokémon for every Claude or Codex agent you're running.
 //
 // Status comes from herdr (`herdr agent list`) when it's running, and from
 // Claude Code hooks (`ClaudePet --hook`, added by install.sh) for sessions
@@ -20,14 +19,66 @@ import AppKit
 import ApplicationServices
 import SQLite3
 
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 // MARK: - Roster and sprites
 
-let roster = [
+struct PokemonSpecies {
+    let id: Int
+    let slug: String
+
+    var assetName: String { slug.replacingOccurrences(of: "-", with: "_") }
+    var displayName: String {
+        switch slug {
+        case "nidoran-f": return "Nidoran♀"
+        case "nidoran-m": return "Nidoran♂"
+        case "farfetchd": return "Farfetch’d"
+        case "mr-mime": return "Mr. Mime"
+        case "mime-jr": return "Mime Jr."
+        case "ho-oh": return "Ho-Oh"
+        case "porygon-z": return "Porygon-Z"
+        default: return slug.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
+        }
+    }
+}
+
+enum PokemonCatalog {
+    struct Response: Decodable {
+        struct Entry: Decodable { let name: String }
+        let results: [Entry]
+    }
+
+    static let fallback = [
     "bulbasaur", "charmander", "squirtle", "pikachu", "oddish", "psyduck", "poliwag", "abra",
     "geodude", "slowpoke", "gastly", "gengar", "cubone", "magikarp", "gyarados", "lapras", "ditto",
     "eevee", "vaporeon", "jolteon", "flareon", "espeon", "umbreon", "leafeon", "glaceon", "sylveon",
     "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite", "sentret", "wooper", "quagsire",
-]
+    ]
+    static let catalogPath = NSHomeDirectory() + "/.local/share/claude-pet/pokemon.json"
+    static let species: [PokemonSpecies] = {
+        guard let data = FileManager.default.contents(atPath: catalogPath),
+              let response = try? JSONDecoder().decode(Response.self, from: data),
+              response.results.count >= 649 else {
+            return fallback.enumerated().map { PokemonSpecies(id: $0.offset + 1, slug: $0.element) }
+        }
+        return response.results.prefix(649).enumerated().map { PokemonSpecies(id: $0.offset + 1, slug: $0.element.name) }
+    }()
+    static let generations: [(title: String, range: ClosedRange<Int>)] = [
+        ("Generation I · Kanto", 1...151),
+        ("Generation II · Johto", 152...251),
+        ("Generation III · Hoenn", 252...386),
+        ("Generation IV · Sinnoh", 387...493),
+        ("Generation V · Unova", 494...649),
+    ]
+    static func names(in range: ClosedRange<Int>) -> [String] {
+        species.filter { range.contains($0.id) }.map(\.assetName)
+    }
+    static func displayName(for assetName: String) -> String {
+        species.first { $0.assetName == assetName }?.displayName ?? assetName.capitalized
+    }
+}
+
+let roster = PokemonCatalog.species.map(\.assetName)
 
 /// A follower sheet: square frames for down ×2, up ×2, left ×2, and
 /// optionally right ×2 (otherwise left is mirrored).
@@ -207,18 +258,42 @@ enum ContextBar {
 
 /// One coding agent: a herdr pane, or a Claude Code session reported by the
 /// pet's hooks (its `pane` is then "session:<id>").
+enum AgentKind: String {
+    case claude = "Claude"
+    case codex = "Codex"
+}
+
+enum AgentBadge {
+    /// Use the installed Codex artwork when available. It stays external to
+    /// this project and the small centre crop reads clearly inside a dark label.
+    static let codexIcon: NSImage? = {
+        var paths: [String] = []
+        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") {
+            paths.append(app.appendingPathComponent("Contents/Resources/icon-codex-dark-color.png").path)
+        }
+        paths.append("/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png")
+        return paths.lazy.compactMap(NSImage.init(contentsOfFile:)).first
+    }()
+}
+
 struct Agent {
     let pane: String
     let status: String // idle, working, blocked, done, unknown
     let title: String
     let project: String
+    var workspace: String = ""
+    var kind: AgentKind = .claude
     /// For hook sessions: the terminal app to bring forward, and Claude's process.
     var app: String? = nil
     var pid: pid_t? = nil
-    /// How full its context window is, 0 to 1, when known.
-    var contextUsed: Double? = nil
+    /// How much of its context window remains, 0 to 1, when known.
+    var contextLeft: Double? = nil
 
-    var label: String { title.isEmpty ? project : "\(project): \(title)" }
+    var label: String {
+        guard !workspace.isEmpty else { return title.isEmpty ? project : "\(project): \(title)" }
+        let scope = "[\(project)] [\(workspace)]"
+        return title.isEmpty ? scope : "\(scope): \(title)"
+    }
 }
 
 /// Runs a tool and returns its output, or nil if it can't run or fails.
@@ -269,6 +344,10 @@ func focus(_ agent: Agent) {
     }
     if agent.pane.hasPrefix(Conductor.prefix) {
         Conductor.open(String(agent.pane.dropFirst(Conductor.prefix.count)))
+        return
+    }
+    if agent.pane.hasPrefix(CodexSessions.prefix) {
+        CodexSessions.open(agent)
         return
     }
     guard agent.pane.hasPrefix(HookSessions.prefix) else {
@@ -417,7 +496,10 @@ enum ClaudeApp {
         guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
             // Closed: they've all stopped.
             running = []
-            latest = latest.map { Agent(pane: $0.pane, status: $0.status == "done" ? "done" : "idle", title: "", project: $0.project) }
+            latest = latest.map {
+                Agent(pane: $0.pane, status: $0.status == "done" ? "done" : "idle",
+                      title: $0.title, project: $0.project, workspace: $0.workspace, kind: $0.kind)
+            }
             return latest
         }
         guard let (chats, open) = sidebar() else { return latest } // hidden for now: keep what we knew
@@ -480,6 +562,8 @@ enum Conductor {
         let title: String
         let workspace: String       // its id
         let workspaceName: String
+        let projectName: String
+        let projectWorkspaceCount: Int
     }
 
     /// nil when Conductor isn't installed, or its database can't be read.
@@ -501,11 +585,15 @@ enum Conductor {
             }
             else if chat.live["status"] as? String == "working" || chat.status == "working" { status = "working" }
             else { status = chat.unread > 0 ? "done" : "idle" } // unread until you look at it
+            let singleWorkspace = chat.projectWorkspaceCount == 1
             var agent = Agent(pane: prefix + chat.id, status: status,
-                              title: chat.title == "Untitled" ? "" : chat.title,
-                              project: chat.workspaceName, app: bundleID)
-            agent.contextUsed = chat.contextPercent.flatMap { $0 > 0 ? $0 / 100 : nil }
-                ?? Context.used(transcript: hook?.transcript, model: hook?.model)
+                              title: singleWorkspace || chat.title == "Untitled" ? "" : chat.title,
+                              project: chat.projectName,
+                              workspace: singleWorkspace ? "" : chat.workspaceName,
+                              kind: chat.agentType.lowercased().contains("codex") ? .codex : .claude,
+                              app: bundleID)
+            agent.contextLeft = chat.contextPercent.map { max(0, min(1, 1 - $0 / 100)) }
+                ?? Context.remaining(transcript: hook?.transcript, model: hook?.model)
             return agent
         }
     }
@@ -523,13 +611,26 @@ enum Conductor {
             SELECT s.id, COALESCE(s.status, 'idle'), COALESCE(ss.live_state, ''), COALESCE(s.agent_type, ''),
                    COALESCE(s.claude_session_id, ''), COALESCE(s.unread_count, 0), s.context_used_percent,
                    COALESCE(s.title, ''), w.local_id,
-                   COALESCE(NULLIF(w.workspace_name, ''), NULLIF(w.directory_name, ''), '')
+                   COALESCE(NULLIF(w.workspace_name, ''), NULLIF(substr(w.branch, instr(w.branch, '/') + 1), ''),
+                            NULLIF(w.directory_name, ''), ''),
+                   COALESCE(NULLIF(r.name, ''), NULLIF(w.directory_name, ''), ''),
+                   (SELECT COUNT(*) FROM workspaces sibling
+                    WHERE sibling.repository_id = w.repository_id
+                      AND COALESCE(sibling.state, '') != 'archived'
+                      AND COALESCE(sibling.DEPRECATED_archived, 0) = 0)
             FROM sessions s
             JOIN workspaces w ON w.local_id = s.workspace_id
+            LEFT JOIN repos r ON r.id = w.repository_id
             LEFT JOIN session_state ss ON ss.session_id = s.id
             WHERE COALESCE(s.is_hidden, 0) = 0 AND s.remote_archived_at IS NULL
               AND COALESCE(w.state, '') != 'archived' AND COALESCE(w.DEPRECATED_archived, 0) = 0
-            ORDER BY s.created_at
+            -- Conductor shows workspaces from hidden repositories in its root
+            -- section above the visible project groups. Visible projects follow
+            -- their sidebar display order, with recently active workspaces first.
+            ORDER BY COALESCE(r.hidden, 0) DESC,
+                     CASE WHEN COALESCE(r.hidden, 0) = 0 THEN COALESCE(r.display_order, 0) ELSE 0 END,
+                     COALESCE(w.last_activity_at, w.updated_at, w.created_at) DESC,
+                     s.created_at
             """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { return nil }
@@ -542,7 +643,8 @@ enum Conductor {
                               unread: Int(sqlite3_column_int(statement, 5)),
                               contextPercent: sqlite3_column_type(statement, 6) == SQLITE_NULL
                                   ? nil : sqlite3_column_double(statement, 6),
-                              title: text(7), workspace: text(8), workspaceName: text(9)))
+                              title: text(7), workspace: text(8), workspaceName: text(9), projectName: text(10),
+                              projectWorkspaceCount: Int(sqlite3_column_int(statement, 11))))
         }
         return chats
     }
@@ -613,7 +715,8 @@ enum Herdr {
                 pane: pane,
                 status: entry["agent_status"] as? String ?? "unknown",
                 title: entry["terminal_title_stripped"] as? String ?? "",
-                project: (cwd as NSString).lastPathComponent
+                project: (cwd as NSString).lastPathComponent,
+                kind: ((entry["agent_type"] as? String) ?? "").lowercased().contains("codex") ? .codex : .claude
             )
         }
     }
@@ -783,6 +886,209 @@ enum HookSessions {
     }
 }
 
+// MARK: - Codex sessions
+
+/// Live Codex CLI, ChatGPT desktop, Conductor, and Orca chats. Codex holds one
+/// writer lock per open thread and records that thread's title, project, events,
+/// and context usage in its local state database.
+enum CodexSessions {
+    static let prefix = "codex:"
+
+    struct Store {
+        let home: String
+        var database: String { home + "/state_5.sqlite" }
+        var locks: String { home + "/thread-writer-locks" }
+    }
+
+    /// Codex Desktop and the standalone CLI use ~/.codex. Orca can isolate
+    /// accounts into their own Codex homes, so include every one it manages.
+    static func stores() -> [Store] {
+        var homes = [NSHomeDirectory() + "/.codex"]
+        let orca = NSHomeDirectory() + "/Library/Application Support/orca"
+        homes.append(orca + "/codex-runtime-home/home")
+        if let accounts = try? FileManager.default.contentsOfDirectory(atPath: orca + "/codex-accounts") {
+            homes += accounts.map { orca + "/codex-accounts/\($0)/home" }
+        }
+        var seen = Set<String>()
+        return homes.filter { seen.insert($0).inserted && FileManager.default.fileExists(atPath: $0 + "/state_5.sqlite") }
+            .map(Store.init)
+    }
+
+    struct Thread {
+        let id: String
+        let rollout: String
+        let cwd: String
+        let title: String
+        let source: String
+        let originator: String
+        let branch: String
+        let agentPath: String
+        let pid: pid_t
+    }
+
+    /// Thread ids and the Codex process holding each one. This intentionally
+    /// ignores historical threads, so a closed CLI chat does not leave a pet.
+    static func liveProcesses(in store: Store) -> [String: pid_t] {
+        guard let locks = try? FileManager.default.contentsOfDirectory(atPath: store.locks),
+              locks.contains(where: { $0.hasSuffix(".lock") && $0 != ".coordination.lock" }),
+              let data = capture("/usr/sbin/lsof", ["-Fpcn", "+D", store.locks]) else { return [:] }
+        var pid: pid_t?
+        var found: [String: pid_t] = [:]
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            if line.first == "p" { pid = pid_t(line.dropFirst()) }
+            guard line.first == "n", let pid else { continue }
+            let file = (String(line.dropFirst()) as NSString).lastPathComponent
+            guard file.hasSuffix(".lock"), file != ".coordination.lock" else { continue }
+            let id = String(file.dropLast(".lock".count))
+            if id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) { found[id] = pid }
+        }
+        return found
+    }
+
+    static func threads(excluding excluded: Set<String>) -> [Thread] {
+        var found: [String: Thread] = [:]
+        for store in stores() {
+            for thread in threads(in: store, excluding: excluded) { found[thread.id] = thread }
+        }
+        return found.values.sorted { $0.id < $1.id }
+    }
+
+    static func threads(in store: Store, excluding excluded: Set<String>) -> [Thread] {
+        let live = liveProcesses(in: store).filter { !excluded.contains($0.key) }
+        guard !live.isEmpty else { return [] }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(store.database, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            return []
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 200)
+        let query = """
+            SELECT rollout_path, cwd, COALESCE(NULLIF(name, ''), NULLIF(preview, ''), NULLIF(title, ''), ''),
+                   source, COALESCE(originator, ''), COALESCE(git_branch, ''), COALESCE(agent_path, '')
+            FROM threads WHERE id = ? AND archived = 0
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+        func text(_ i: Int32) -> String { sqlite3_column_text(statement, i).map { String(cString: $0) } ?? "" }
+        var threads: [Thread] = []
+        for (id, pid) in live {
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+            sqlite3_bind_text(statement, 1, id, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(statement) == SQLITE_ROW else { continue }
+            threads.append(Thread(id: id, rollout: text(0), cwd: text(1), title: cleanTitle(text(2)),
+                                  source: text(3), originator: text(4), branch: text(5),
+                                  agentPath: text(6), pid: pid))
+        }
+        return threads
+    }
+
+    /// The last turn boundary in a rollout tells us whether Codex is working,
+    /// waiting for input, or finished. The most recent token event supplies CTX.
+    static func state(of thread: Thread) -> (status: String, context: Double?) {
+        guard let handle = FileHandle(forReadingAtPath: thread.rollout) else { return ("idle", nil) }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 524_288 ? size - 524_288 : 0)
+        var status = "idle"
+        var context: Double?
+        for line in String(decoding: handle.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = json["type"] as? String,
+                  let payload = json["payload"] as? [String: Any] else { continue }
+            if type == "event_msg", let event = payload["type"] as? String {
+                switch event {
+                case "task_started": status = "working"
+                case "task_complete": status = "done"
+                case "turn_aborted": status = "idle"
+                case "token_count":
+                    if let info = payload["info"] as? [String: Any],
+                       let usage = info["last_token_usage"] as? [String: Any],
+                       let tokens = usage["total_tokens"] as? NSNumber,
+                       let window = info["model_context_window"] as? NSNumber, window.doubleValue > 0 {
+                        context = tokens.doubleValue / window.doubleValue
+                    }
+                default: break
+                }
+            } else if type == "response_item", payload["type"] as? String == "custom_tool_call" {
+                let name = (payload["name"] as? String) ?? ""
+                if name.contains("request_user_input") { status = "blocked" }
+            } else if type == "response_item", payload["type"] as? String == "custom_tool_call_output",
+                      status == "blocked" {
+                status = "working"
+            }
+        }
+        if status == "done", modifiedAt(thread.rollout) <= seenAt(thread.id) { status = "idle" }
+        return (status, context)
+    }
+
+    static func agents(excluding excluded: Set<String>) -> [Agent] {
+        threads(excluding: excluded).map { thread in
+            let state = state(of: thread)
+            let app = hostApp(of: thread.pid)?.bundleIdentifier
+            let scope = projectAndWorkspace(for: thread)
+            return Agent(pane: prefix + thread.id, status: state.status, title: thread.title,
+                         project: scope.project, workspace: scope.workspace, kind: .codex,
+                         app: app, pid: thread.pid,
+                         contextLeft: state.context.map { max(0, min(1, 1 - $0)) })
+        }
+    }
+
+    static func projectAndWorkspace(for thread: Thread) -> (project: String, workspace: String) {
+        let parts = URL(fileURLWithPath: thread.cwd).pathComponents
+        if let i = parts.lastIndex(of: "workspaces"), i + 2 < parts.count {
+            return (parts[i + 1], workspaceName(thread) ?? parts[i + 2])
+        }
+        if let i = parts.lastIndex(of: "projects"), i + 1 < parts.count {
+            return (parts[i + 1], workspaceName(thread) ?? "root")
+        }
+        let project = (thread.cwd as NSString).lastPathComponent.isEmpty
+            ? (thread.originator.isEmpty ? "Codex" : thread.originator)
+            : (thread.cwd as NSString).lastPathComponent
+        return (project, workspaceName(thread) ?? "root")
+    }
+
+    static func workspaceName(_ thread: Thread) -> String? {
+        if !thread.agentPath.isEmpty { return thread.agentPath.split(separator: "/").last.map(String.init) }
+        let branch = thread.branch.split(separator: "/").last.map(String.init) ?? ""
+        return branch.isEmpty || branch == "main" || branch == "master" ? nil : branch
+    }
+
+    static func cleanTitle(_ raw: String) -> String {
+        var value = raw
+        if let end = value.range(of: "</system_instruction>", options: .backwards) { value = String(value[end.upperBound...]) }
+        let words = value.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let title = words.joined(separator: " ")
+        guard title.count > 80 else { return title }
+        return String(title.prefix(79)) + "…"
+    }
+
+    static func modifiedAt(_ path: String) -> Double {
+        ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+    }
+
+    static func seenAt(_ id: String) -> Double {
+        (UserDefaults.standard.dictionary(forKey: "codexSeen") as? [String: Double])?[id] ?? 0
+    }
+
+    static func markSeen(_ id: String) {
+        var seen = UserDefaults.standard.dictionary(forKey: "codexSeen") as? [String: Double] ?? [:]
+        let rollout = threads(excluding: []).first { $0.id == id }?.rollout
+        seen[id] = rollout.map(modifiedAt) ?? Date().timeIntervalSince1970
+        UserDefaults.standard.set(seen, forKey: "codexSeen")
+    }
+
+    static func open(_ agent: Agent) {
+        markSeen(String(agent.pane.dropFirst(prefix.count)))
+        let app = agent.app.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
+            ?? agent.pid.flatMap(hostApp(of:))
+        app?.activate()
+    }
+}
+
 // MARK: - Pet
 
 /// `stored` is back in its Poké Ball: 12 hours unused, or recalled from the menu.
@@ -861,8 +1167,19 @@ final class PetView: NSView {
     /// How far it paces either side while working. Less in a row, where
     /// neighbours stand close enough that they'd walk into each other.
     var pace = PetView.columnPace
+    /// In a horizontal line-up, every second caption sits above its pet so
+    /// adjacent completion messages do not cover each other.
+    var captionAbove = false
     static let columnPace: CGFloat = 12
     static let rowPace: CGFloat = 4
+
+    /// Flat, object-like Pokémon read more naturally as rotating mechanisms
+    /// than as little animals pacing from side to side.
+    static let spinningPokemon: Set<String> = [
+        "magnemite", "magneton", "voltorb", "electrode", "unown",
+        "baltoy", "claydol", "lunatone", "solrock", "bronzor", "bronzong",
+        "magnezone", "rotom", "klink", "klang", "klinklang", "cryogonal",
+    ]
 
     /// Where the sprite rests: the middle of the window, so the caption under
     /// it can centre. At a screen edge the window hangs past it (see PetPanel).
@@ -904,7 +1221,7 @@ final class PetView: NSView {
     var lastBusy: Date
     var previousStatus: String?
     var finishedAt: Date?
-    var contextUsed: Double?
+    var contextLeft: Double?
     var transition: Transition?
     /// While its Poké Ball is in the air there's nothing to draw here yet.
     var arriving = false
@@ -938,8 +1255,9 @@ final class PetView: NSView {
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    var name: String { pokemon.capitalized }
+    var name: String { PokemonCatalog.displayName(for: pokemon) }
     var spriteSize: CGFloat { CGFloat(sheet.frames[0].width) * Self.scale }
+    var spinsWhileWorking: Bool { Self.spinningPokemon.contains(pokemon) }
 
     func setPokemon(_ name: String, sheet: SpriteSheet) {
         pokemon = name
@@ -962,7 +1280,7 @@ final class PetView: NSView {
         }
         previousStatus = latest.status
         agent = latest
-        contextUsed = latest.contextUsed
+        contextLeft = latest.contextLeft
 
         let next: Mood
         switch latest.status {
@@ -1043,18 +1361,9 @@ final class PetView: NSView {
         }
     }
 
-    var summary: String {
-        switch mood {
-        case .alert: return "\(name): \(agent.project) needs you"
-        case .done: return "\(name): \(agent.project) is done"
-        case .working: return "\(name): \(agent.project) is working"
-        case .sleeping: return "\(name) is asleep"
-        case .stored: return "\(name) is resting"
-        case .idle: return "\(name): \(agent.project)"
-        }
-    }
+    var summary: String { agent.label }
 
-    /// Advances one animation step: walks while working, and walks home after.
+    /// Advances one animation step: walks or spins while working, and walks home after.
     func animate() {
         tick += 1
         if let transition, tick - transition.start >= transition.ticks {
@@ -1065,7 +1374,7 @@ final class PetView: NSView {
             }
         }
         let speed: CGFloat = 2
-        if mood == .working {
+        if mood == .working && !spinsWhileWorking {
             walkX += walkDirection * speed
             if abs(walkX) >= pace { walkDirection = walkX > 0 ? -1 : 1 }
         } else if walkX != 0 {
@@ -1092,7 +1401,8 @@ final class PetView: NSView {
         var mirrored = false
         var lift: CGFloat = 0
         var flash = false
-        let walking = walkX != 0 || mood == .working
+        let spinning = mood == .working && spinsWhileWorking
+        let walking = !spinning && (walkX != 0 || mood == .working)
 
         if walking {
             let right = walkDirection > 0
@@ -1101,6 +1411,26 @@ final class PetView: NSView {
             } else {
                 image = frames[4 + step]
                 mirrored = right
+            }
+        } else if spinning {
+            // Turn on the ground through front, side, back, and the other side.
+            // The sprite stays centred instead of rotating as a flat picture.
+            let turn = tick / 3 % 4
+            let turnStep = tick / 2 % 2
+            switch turn {
+            case 0:
+                image = frames[turnStep]
+            case 1:
+                image = frames[4 + turnStep]
+            case 2:
+                image = frames[2 + turnStep]
+            default:
+                if frames.count >= 8 {
+                    image = frames[6 + turnStep]
+                } else {
+                    image = frames[4 + turnStep]
+                    mirrored = true
+                }
             }
         }
 
@@ -1138,13 +1468,14 @@ final class PetView: NSView {
         case .sleeping, .stored: drawSnores(over: rect)
         default: break
         }
-        drawContextBarIfShown(headTop: Self.spriteTop + CGFloat(sheet.top) * Self.scale)
+        let headTop = rect.minY + CGFloat(sheet.top) * Self.scale
+        drawContextBarIfShown(headTop: headTop)
         // One caption under the pet: its status while hovered (or just after it
         // needs you), otherwise "is done" when it has finished.
         if hovering || Date() < labelUntil {
-            drawCaption(summary)
+            drawCaption(summary, badge: agent.kind, headTop: headTop)
         } else if mood == .done {
-            drawCaption("\(name) is done")
+            drawCaption("\(name) is done", headTop: headTop)
         }
     }
 
@@ -1174,22 +1505,57 @@ final class PetView: NSView {
 
     /// A caption centred under the pet, such as "Pikachu is done" or its status,
     /// slid inward only as far as it takes to stay on screen.
-    func drawCaption(_ text: String) {
+    func drawCaption(_ text: String, badge: AgentKind? = nil, headTop: CGFloat? = nil) {
         let attrs: [NSAttributedString.Key: Any] = [.font: Self.captionFont, .foregroundColor: NSColor.white]
         let room = onScreenRect.intersection(bounds).insetBy(dx: 4, dy: 0)
+        let badgeRoom: CGFloat = badge == nil ? 0 : 17
         var shown = text
         var keep = text.count
-        while (shown as NSString).size(withAttributes: attrs).width + 12 > room.width && keep > 1 {
+        while (shown as NSString).size(withAttributes: attrs).width + 12 + badgeRoom > room.width && keep > 1 {
             keep -= 1
             shown = String(text.prefix(keep)) + "…"
         }
         let size = (shown as NSString).size(withAttributes: attrs)
-        let width = size.width + 12
+        let width = size.width + 12 + badgeRoom
         let x = min(max(homeX + spriteSize / 2 - width / 2, room.minX), room.maxX - width)
-        let pill = NSRect(x: x.rounded(), y: ground + 2, width: width, height: size.height + 4)
+        let height = size.height + 4
+        let y = captionAbove && headTop != nil ? max(0, headTop! - height - 5) : ground + 2
+        let pill = NSRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
         NSColor(white: 0.1, alpha: 0.85).setFill()
         NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
-        (shown as NSString).draw(at: NSPoint(x: pill.minX + 6, y: pill.minY + 2), withAttributes: attrs)
+        if let badge { drawAgentBadge(badge, at: NSPoint(x: pill.minX + 12.5, y: pill.midY)) }
+        (shown as NSString).draw(at: NSPoint(x: pill.minX + 6 + badgeRoom, y: pill.minY + 2), withAttributes: attrs)
+    }
+
+    /// A tiny logo-like marker distinguishes providers without adding another
+    /// word to an already detailed project, workspace, and chat label.
+    func drawAgentBadge(_ kind: AgentKind, at point: NSPoint) {
+        switch kind {
+        case .claude:
+            let r: CGFloat = 4
+            let star = NSBezierPath()
+            star.move(to: NSPoint(x: point.x, y: point.y - r))
+            star.line(to: NSPoint(x: point.x + 1.5, y: point.y - 1.5))
+            star.line(to: NSPoint(x: point.x + r, y: point.y))
+            star.line(to: NSPoint(x: point.x + 1.5, y: point.y + 1.5))
+            star.line(to: NSPoint(x: point.x, y: point.y + r))
+            star.line(to: NSPoint(x: point.x - 1.5, y: point.y + 1.5))
+            star.line(to: NSPoint(x: point.x - r, y: point.y))
+            star.line(to: NSPoint(x: point.x - 1.5, y: point.y - 1.5))
+            star.close()
+            NSColor(srgbRed: 0.85, green: 0.38, blue: 0.20, alpha: 1).setFill()
+            star.fill()
+        case .codex:
+            let rect = NSRect(x: point.x - 6.5, y: point.y - 6.5, width: 13, height: 13)
+            if let icon = AgentBadge.codexIcon {
+                icon.draw(in: rect, from: NSRect(x: 142, y: 142, width: 740, height: 740),
+                          operation: .sourceOver, fraction: 1, respectFlipped: true,
+                          hints: [.interpolation: NSImageInterpolation.high.rawValue])
+            } else {
+                NSColor(srgbRed: 0.35, green: 0.42, blue: 1, alpha: 1).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+            }
+        }
     }
 
     /// Three pixel z's drifting up and to the right off the top of the pet's
@@ -1228,15 +1594,15 @@ final class PetView: NSView {
     }
 
     /// The CTX bar above the pet's head, while you hover over it or once its
-    /// context is at least 80% used.
+    /// context has 20% or less remaining.
     func drawContextBarIfShown(headTop: CGFloat) {
-        guard let used = contextUsed, hovering || used >= 0.8 else { return }
-        drawContextBar(used: used, headTop: headTop)
+        guard let remaining = contextLeft, hovering || remaining <= 0.2 else { return }
+        drawContextBar(remaining: remaining, headTop: headTop)
     }
 
     /// A Gen 3 HP bar labelled CTX: it drains as the chat fills its context
     /// window, from green to yellow below half to red below a fifth.
-    func drawContextBar(used: Double, headTop: CGFloat) {
+    func drawContextBar(remaining rawRemaining: Double, headTop: CGFloat) {
         let px = max(1, (Self.scale * 4 / 3).rounded() / 2), width = 42, height = 7, track = 24 // 2 at medium
         let left = (homeX + spriteSize / 2 - CGFloat(width) * px / 2).rounded()
         let top = (headTop - 3 - CGFloat(height) * px).rounded()
@@ -1260,7 +1626,7 @@ final class PetView: NSView {
         // The white-edged track, filled with what's left.
         fill(ContextBar.border, 14, 1, track + 2, 5)
         fill(ContextBar.empty, 15, 2, track, 3)
-        let remaining = max(0, min(1, 1 - used))
+        let remaining = max(0, min(1, rawRemaining))
         let filled = remaining > 0 ? max(1, Int((Double(track) * remaining).rounded())) : 0
         let (light, shade) = remaining > 0.5 ? ContextBar.green : remaining > 0.2 ? ContextBar.yellow : ContextBar.red
         if filled > 0 {
@@ -1368,6 +1734,9 @@ final class PetView: NSView {
     /// The frames its current pose flips between, and whether they're drawn
     /// mirrored, as draw(_:) picks them.
     var pose: (frames: [Int], mirrored: Bool) {
+        if mood == .working && spinsWhileWorking {
+            return (Array(sheet.frames.indices.prefix(min(8, sheet.frames.count))), false)
+        }
         guard walkX != 0 || mood == .working else { return ([0, 1], false) }
         let right = walkDirection > 0
         if right && sheet.frames.count >= 8 { return ([6, 7], false) }
@@ -1439,6 +1808,9 @@ final class PetView: NSView {
         let detail = NSMenuItem(title: agent.label, action: nil, keyEquivalent: "")
         detail.isEnabled = false
         menu.addItem(detail)
+        let provider = NSMenuItem(title: "Agent · \(agent.kind.rawValue)", action: nil, keyEquivalent: "")
+        provider.isEnabled = false
+        menu.addItem(provider)
         menu.addItem(.separator())
 
         let go = NSMenuItem(title: "Go to Agent", action: #selector(goToAgent), keyEquivalent: "")
@@ -1467,12 +1839,20 @@ final class PetView: NSView {
         let choose = NSMenuItem(title: "Pokémon", action: nil, keyEquivalent: "")
         let choices = NSMenu()
         choices.autoenablesItems = false
-        let grid = NSMenuItem()
-        grid.view = PokemonGrid(current: pokemon, taken: otherPokemon?() ?? []) { [weak self] name in
-            guard let self else { return }
-            self.onChoosePokemon?(self, name)
+        for generation in PokemonCatalog.generations {
+            let region = NSMenuItem(title: generation.title, action: nil, keyEquivalent: "")
+            let picker = NSMenu()
+            picker.autoenablesItems = false
+            let grid = NSMenuItem()
+            grid.view = PokemonPickerView(names: PokemonCatalog.names(in: generation.range),
+                                          current: pokemon, taken: otherPokemon?() ?? []) { [weak self] name in
+                guard let self else { return }
+                self.onChoosePokemon?(self, name)
+            }
+            picker.addItem(grid)
+            region.submenu = picker
+            choices.addItem(region)
         }
-        choices.addItem(grid)
         choose.submenu = choices
         menu.addItem(choose)
 
@@ -1597,6 +1977,25 @@ final class SizeSlider: NSView {
 
 // MARK: - Pokémon picker
 
+/// A generation can contain more Pokémon than fit on screen, so each region's
+/// grid lives in a compact scrolling submenu.
+final class PokemonPickerView: NSView {
+    init(names: [String], current: String, taken: Set<String>, onPick: @escaping (String) -> Void) {
+        let grid = PokemonGrid(names: names, current: current, taken: taken, onPick: onPick)
+        let viewport = NSSize(width: grid.frame.width + 14, height: min(grid.frame.height, 520))
+        super.init(frame: NSRect(origin: .zero, size: viewport))
+        let scroll = NSScrollView(frame: bounds)
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = grid.frame.height > viewport.height
+        scroll.autohidesScrollers = true
+        scroll.documentView = grid
+        scroll.contentView.scroll(to: .zero)
+        addSubview(scroll)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
 /// Every Pokémon as its sprite in a grid, shown in the right-click menu. The
 /// current one is highlighted, ones other agents have are faded (picking one
 /// swaps), and the hovered one walks in place.
@@ -1605,7 +2004,7 @@ final class PokemonGrid: NSView {
     static let cell = NSSize(width: 68, height: 84)
     static let padding: CGFloat = 8
 
-    let names = roster.filter { SpriteSheet.named($0) != nil }
+    let names: [String]
     let current: String
     let taken: Set<String>
     let onPick: (String) -> Void
@@ -1613,11 +2012,12 @@ final class PokemonGrid: NSView {
     var step = 0
     var timer: Timer?
 
-    init(current: String, taken: Set<String>, onPick: @escaping (String) -> Void) {
+    init(names: [String] = roster, current: String, taken: Set<String>, onPick: @escaping (String) -> Void) {
+        self.names = names.filter { SpriteSheet.named($0) != nil }
         self.current = current
         self.taken = taken
         self.onPick = onPick
-        let rows = (names.count + Self.columns - 1) / Self.columns
+        let rows = (self.names.count + Self.columns - 1) / Self.columns
         super.init(frame: NSRect(x: 0, y: 0,
                                  width: CGFloat(Self.columns) * Self.cell.width + 2 * Self.padding,
                                  height: CGFloat(rows) * Self.cell.height + 2 * Self.padding))
@@ -1693,8 +2093,16 @@ final class PokemonGrid: NSView {
             }
 
             let frame = i == hovered ? sheet.frames[step % 2] : sheet.frames[0]
-            let size = CGFloat(frame.width) * 2
-            let sprite = NSRect(x: cell.midX - size / 2, y: cell.minY + 2, width: size, height: size)
+            // Some 64-pixel sheets contain a normal-sized sprite surrounded by
+            // transparent padding. Fit the visible artwork, not the raw frame,
+            // so those Pokémon remain as large as their 32-pixel neighbours.
+            let box = sheet.boxes[i == hovered ? step % 2 : 0]
+            let visibleSize = max(box.width, box.height)
+            let previewScale = visibleSize > 0 ? min(2, 58 / visibleSize) : 1
+            let size = CGFloat(frame.width) * previewScale
+            let sprite = NSRect(x: cell.midX - box.midX * previewScale,
+                                y: cell.minY + 31 - box.midY * previewScale,
+                                width: size, height: size)
             let inUse = taken.contains(name)
             drawPixelSprite(frame, in: sprite, alpha: inUse ? 0.4 : 1)
 
@@ -1702,9 +2110,9 @@ final class PokemonGrid: NSView {
                 .font: font,
                 .foregroundColor: inUse ? NSColor.tertiaryLabelColor : NSColor.labelColor,
             ]
-            let label = name.capitalized as NSString
+            let label = PokemonCatalog.displayName(for: name) as NSString
             let width = label.size(withAttributes: attrs).width
-            label.draw(at: NSPoint(x: cell.midX - width / 2, y: sprite.maxY), withAttributes: attrs)
+            label.draw(at: NSPoint(x: cell.midX - width / 2, y: cell.minY + 64), withAttributes: attrs)
         }
     }
 }
@@ -2294,6 +2702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var stack: [(pet: PetView, panel: PetPanel)] = []
         for pane in order {
             guard let pet = pets[pane], let panel = panels[pane] else { continue }
+            pet.captionAbove = false
             if pet.isGone {
                 // Out of sight, taking no room; it's put straight in place when it comes back.
                 panel.setShown(false)
@@ -2307,7 +2716,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 stack.append((pet, panel))
             }
         }
-        for (pet, _) in stack { pet.pace = arrangement.vertical ? PetView.columnPace : PetView.rowPace }
+        for (i, item) in stack.enumerated() {
+            item.pet.pace = arrangement.vertical ? PetView.columnPace : PetView.rowPace
+            item.pet.captionAbove = !arrangement.vertical && i % 2 == 1
+        }
         // Last first, each ordered in front of the next, so in a column a pet's
         // caption covers the z's rising from the one below, and they pass behind it.
         var origins = stackOrigins(stack.map(\.pet), in: visible, arrangement: arrangement)
@@ -2539,12 +2951,15 @@ func drawMockTerminal(centeredIn canvas: NSSize) {
 /// shows the same party, as if you'd right-clicked Gengar.
 let demoParty = ["charmander", "snorlax", "gengar", "ditto"]
 
-/// The Pokémon picker on white, as if right-clicking Gengar in the mock
-/// screenshot: Gengar current, the rest of the party taken, Pikachu hovered.
+/// A generation's Pokémon picker on white for visual regression checks.
 @MainActor
-func renderPicker(to path: String) {
-    let grid = PokemonGrid(current: "gengar", taken: Set(demoParty).subtracting(["gengar"])) { _ in }
-    grid.hovered = grid.names.firstIndex(of: "pikachu")
+func renderPicker(to path: String, generation: Int = 1) {
+    let index = min(max(generation, 1), PokemonCatalog.generations.count) - 1
+    let names = PokemonCatalog.names(in: PokemonCatalog.generations[index].range)
+    let current = generation == 1 ? "gengar" : names.first ?? "gengar"
+    let grid = PokemonGrid(names: names, current: current,
+                           taken: generation == 1 ? Set(demoParty).subtracting(["gengar"]) : []) { _ in }
+    grid.hovered = grid.names.firstIndex(of: generation == 1 ? "pikachu" : current)
     guard let rep = grid.bitmapImageRepForCachingDisplay(in: grid.bounds),
           let canvas = NSBitmapImageRep(
               bitmapDataPlanes: nil, pixelsWide: rep.pixelsWide, pixelsHigh: rep.pixelsHigh,
@@ -2588,6 +3003,7 @@ func renderDesktop(background path: String, to out: String, arrangement: Arrange
         pet.walkX = c.walkX
         return pet
     }
+    for (i, pet) in pets.enumerated() { pet.captionAbove = !arrangement.vertical && i % 2 == 1 }
     let origins = stackOrigins(pets, in: NSRect(origin: .zero, size: size), arrangement: arrangement)
 
     guard let canvas = NSBitmapImageRep(
@@ -2651,7 +3067,7 @@ func renderSheet(to path: String) {
         view.walkDirection = walkX < 0 ? -1 : 1
         view.hovering = hover
         view.transition = transition.map { Transition(kind: $0.0, start: tick - $0.1) }
-        view.contextUsed = context
+        view.contextLeft = context
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
         view.cacheDisplay(in: view.bounds, to: rep)
         rep.draw(in: NSRect(x: CGFloat(i) * cell.width, y: size.height - cell.height,
@@ -2690,25 +3106,28 @@ func currentAgents() -> [Agent] {
     let herdr = Herdr.agents()
     let records = HookSessions.liveRecords()
     let conductor = Conductor.agents(records: records)
+    let conductorThreads = Set(Conductor.chats()?.compactMap {
+        $0.agentType.lowercased().contains("codex") && !$0.claudeSession.isEmpty ? $0.claudeSession : nil
+    } ?? [])
+    let codex = CodexSessions.agents(excluding: conductorThreads)
     // Conductor's Claude chats run the hooks too, but its own list covers them.
     let hooked = conductor == nil ? records : records.filter { $0.app != Conductor.bundleID }
     var agents = (herdr ?? []) + HookSessions.agents(from: hooked, herdrRunning: herdr != nil) + ClaudeApp.agents()
     for i in agents.indices where !agents[i].pane.hasPrefix(ClaudeApp.prefix) {
-        agents[i].contextUsed = Context.used(by: agents[i], records: records)
+        agents[i].contextLeft = Context.remaining(by: agents[i], records: records)
     }
-    return agents + (conductor ?? [])
+    return agents + (conductor ?? []) + codex
 }
 
 // MARK: - Context
 
-/// How full each agent's context window is, from the token counts Claude Code
-/// writes to the session transcript. Uses the same input-only sum as Claude
-/// Code's own context percentage.
+/// How much of each agent's context window remains, derived from the token
+/// counts Claude Code writes to the session transcript.
 enum Context {
     /// Token counts by transcript, re-read only when the file changes.
     private static var cache: [String: (modified: Date, tokens: Int?)] = [:]
 
-    static func used(by agent: Agent, records: [HookSessions.Record]) -> Double? {
+    static func remaining(by agent: Agent, records: [HookSessions.Record]) -> Double? {
         // A herdr pane's session is whichever reported from that pane most recently.
         let record = agent.pane.hasPrefix(HookSessions.prefix)
             ? records.first { HookSessions.prefix + $0.session == agent.pane }
@@ -2716,13 +3135,14 @@ enum Context {
         // A herdr pane that hasn't run a hook since the pets were installed is
         // found through its process instead.
         let path = record?.transcript ?? (agent.pane.hasPrefix(HookSessions.prefix) ? nil : paneTranscript(agent.pane))
-        return used(transcript: path, model: record?.model)
+        return remaining(transcript: path, model: record?.model)
     }
 
-    /// How full a transcript's context window is.
-    static func used(transcript path: String?, model: String?) -> Double? {
+    /// How much of a transcript's context window remains.
+    static func remaining(transcript path: String?, model: String?) -> Double? {
         guard let path, let tokens = tokens(in: path) else { return nil }
-        return Double(tokens) / Double(window(model: model, tokens: tokens))
+        let used = Double(tokens) / Double(window(model: model, tokens: tokens))
+        return max(0, min(1, 1 - used))
     }
 
     /// Panes' transcripts found by process, re-checked every half minute.
@@ -2823,8 +3243,17 @@ struct ClaudePet {
         }
         if args.contains("--status") {
             for agent in currentAgents() {
-                let context = agent.contextUsed.map { "ctx \(Int(($0 * 100).rounded()))%" } ?? "ctx ?"
-                print(agent.pane, agent.status, agent.project, context, agent.app ?? "")
+                let context = agent.contextLeft.map { "ctx \(Int(($0 * 100).rounded()))% left" } ?? "ctx ?"
+                print(agent.pane, agent.status, agent.kind.rawValue, agent.label, context, agent.app ?? "")
+            }
+            return
+        }
+        if args.contains("--validate-sprites") {
+            let missing = roster.filter { SpriteSheet.named($0) == nil }
+            if missing.isEmpty {
+                print("Validated \(roster.count) Pokémon sprite sheets.")
+            } else {
+                print("Missing or invalid sprites:", missing.joined(separator: ", "))
             }
             return
         }
@@ -2848,7 +3277,8 @@ struct ClaudePet {
             return
         }
         if let i = args.firstIndex(of: "--render-picker"), i + 1 < args.count {
-            renderPicker(to: args[i + 1])
+            let generation = i + 2 < args.count ? Int(args[i + 2]) ?? 1 : 1
+            renderPicker(to: args[i + 1], generation: generation)
             return
         }
         // One Claude Pet at a time.
