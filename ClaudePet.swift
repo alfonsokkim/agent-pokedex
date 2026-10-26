@@ -1328,6 +1328,50 @@ enum PetSize {
     static func scale(for value: CGFloat) -> CGFloat { value }
 }
 
+/// A short, one-shot burst. The existing animation clock drives it without extra timers.
+struct ShinyHoverBurst {
+    static let duration = 10
+    static let pattern = ["...G...", "...Y...", "..YWY..", "GYWWWYG", "..YWY..", "...Y...", "...G..."]
+    private(set) var start: Int?
+
+    mutating func begin(at tick: Int) {
+        if progress(at: tick) == nil { start = tick }
+    }
+    mutating func reset() { start = nil }
+    func progress(at tick: Int) -> CGFloat? {
+        guard let start, tick >= start, tick - start < Self.duration else { return nil }
+        return CGFloat(tick - start) / CGFloat(Self.duration)
+    }
+
+    struct Star {
+        let origin: NSPoint
+        let pixel: CGFloat
+        let alpha: CGFloat
+        var frame: NSRect { NSRect(origin: origin, size: NSSize(width: 7 * pixel, height: 7 * pixel)) }
+    }
+
+    func stars(at tick: Int, around box: NSRect, in bounds: NSRect, scale: CGFloat) -> [Star] {
+        guard let progress = progress(at: tick) else { return [] }
+        let basePixel = max(1, (scale * 0.65).rounded())
+        let center = NSPoint(x: box.midX, y: box.midY)
+        // Stay inside the transparent window, including large and wide species.
+        let rx = max(0, min(box.width / 2 + 10 * scale,
+                            min(center.x - bounds.minX, bounds.maxX - center.x) - 4 * basePixel))
+        let ry = max(0, min(box.height / 2 + 10 * scale,
+                            min(center.y - bounds.minY, bounds.maxY - center.y) - 4 * basePixel))
+        return (0..<8).map { i in
+            let p = max(0, min(1, progress * 1.2 - CGFloat(i % 3) * 0.08))
+            let angle = CGFloat(i) * .pi / 4 + .pi / 8 + p * 0.25
+            let distance = 0.25 + 0.75 * (1 - pow(1 - p, 2))
+            let pixel = p > 0.72 ? max(1, (basePixel / 2).rounded()) : basePixel
+            let x = ((center.x + cos(angle) * rx * distance) / pixel).rounded() * pixel - 3 * pixel
+            let y = ((center.y + sin(angle) * ry * distance) / pixel).rounded() * pixel - 3 * pixel
+            let twinkle: CGFloat = (tick + i) % 3 == 0 ? 0.65 : 1
+            return Star(origin: NSPoint(x: x, y: y), pixel: pixel, alpha: min(1, (1 - p) * 2.5) * twinkle)
+        }
+    }
+}
+
 final class PetView: NSView {
     static let width: CGFloat = 320
     /// Screen points per sprite pixel, from the Size slider (3 is medium).
@@ -1373,6 +1417,7 @@ final class PetView: NSView {
     private(set) var agent: Agent
     private(set) var pokemon: String
     private(set) var isShiny = false
+    private(set) var shinyBurst = ShinyHoverBurst()
     private var sheet: SpriteSheet
 
     var onMoved: ((PetView) -> Void)?
@@ -1400,6 +1445,10 @@ final class PetView: NSView {
             guard hovering != oldValue else { return }
             // Lift the hovered pet above its neighbours so its label shows on top.
             window?.level = hovering ? NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1) : .floating
+            if hovering && isShiny && !arriving && mood != .stored && transition == nil {
+                shinyBurst.begin(at: tick)
+            }
+            needsDisplay = true
         }
     }
     var hopUntil = Date.distantPast
@@ -1448,27 +1497,35 @@ final class PetView: NSView {
 
     func setPokemon(_ name: String, sheet: SpriteSheet) {
         pokemon = name
-        isShiny = false
         if Self.recordsActivity { ShinyEncounters.save(false, pane: agent.pane, pokemon: name) }
+        applyAppearance(sheet: sheet, shiny: false)
+    }
+
+    func applyAppearance(sheet: SpriteSheet, shiny: Bool) {
         self.sheet = sheet
+        isShiny = shiny
+        shinyBurst.reset()
         fitSize()
     }
 
     private func updateAppearance(reroll: Bool = false) {
         let shiny = ShinyEncounters.resolve(pane: agent.pane, pokemon: pokemon, reroll: reroll)
         if let selected = SpriteSheet.named(pokemon, shiny: shiny) {
-            sheet = selected
-            isShiny = shiny
+            applyAppearance(sheet: selected, shiny: shiny)
         } else if let normal = SpriteSheet.named(pokemon) {
-            sheet = normal
-            isShiny = false
+            applyAppearance(sheet: normal, shiny: false)
         }
         needsDisplay = true
     }
 
-    /// Matches the view's height to its sprite at the current size.
+    /// Matches the view and its window to the sprite, keeping the ground anchored.
     func fitSize() {
-        setFrameSize(NSSize(width: Self.width, height: Self.height(for: sheet)))
+        let size = NSSize(width: Self.width, height: Self.height(for: sheet))
+        // Changing the content view alone leaves a larger sprite clipped by its old window.
+        if let window, window.contentView === self {
+            window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+        }
+        setFrameSize(size)
         needsDisplay = true
     }
 
@@ -1515,6 +1572,7 @@ final class PetView: NSView {
         }
         let wasGone = isGone
         if next == .stored && mood != .stored {
+            shinyBurst.reset()
             transition = Transition(kind: .recall, start: tick)
         } else if mood == .stored && next != .stored {
             if Self.recordsActivity { updateAppearance(reroll: true) }
@@ -1664,6 +1722,7 @@ final class PetView: NSView {
         } else {
             drawSprite(image, in: rect, mirrored: mirrored)
         }
+        drawShinyBurst(lift: lift)
 
         switch mood {
         case .working: drawWorkingDots(under: rect)
@@ -1683,6 +1742,25 @@ final class PetView: NSView {
 
     /// Where the ground is: the bottom of the resting sprite frame.
     var ground: CGFloat { Self.spriteTop + spriteSize }
+
+    func drawShinyBurst(lift: CGFloat) {
+        guard isShiny, shinyBurst.progress(at: tick) != nil else { return }
+        let colors: [Character: NSColor] = [
+            "G": NSColor(srgbRed: 0.85, green: 0.51, blue: 0.08, alpha: 1),
+            "Y": NSColor(srgbRed: 1, green: 0.85, blue: 0.24, alpha: 1),
+            "W": NSColor(srgbRed: 1, green: 1, blue: 0.88, alpha: 1),
+        ]
+        for star in shinyBurst.stars(at: tick, around: hitBox.offsetBy(dx: 0, dy: -lift), in: bounds, scale: Self.scale) {
+            for (row, line) in ShinyHoverBurst.pattern.enumerated() {
+                for (col, key) in line.enumerated() {
+                    guard let color = colors[key] else { continue }
+                    color.withAlphaComponent(star.alpha).setFill()
+                    NSRect(x: star.origin.x + CGFloat(col) * star.pixel, y: star.origin.y + CGFloat(row) * star.pixel,
+                           width: star.pixel, height: star.pixel).fill()
+                }
+            }
+        }
+    }
 
     /// One to three dots, centred just under the pet, while it works.
     func drawWorkingDots(under rect: NSRect) {
@@ -2894,12 +2972,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let scale = PetSize.scale(for: value)
         guard scale != PetView.scale else { return }
         PetView.scale = scale
-        for (pane, pet) in pets {
-            pet.fitSize()
-            guard let panel = panels[pane] else { continue }
-            // Bottom-left stays put, so the ground does too; the line-up then settles.
-            panel.setFrame(NSRect(origin: panel.frame.origin, size: pet.frame.size), display: true)
-        }
+        for pet in pets.values { pet.fitSize() }
         layout(animated: false) // follows the slider as it moves
     }
 

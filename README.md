@@ -22,6 +22,8 @@ Each new pet and each release from a Poke Ball has a 1-in-25 chance to be
 shiny. It keeps those colours until recalled, including across app restarts.
 The picker uses normal colours; choosing a different Pokemon starts it in its
 normal form. Waking a sleeping pet or showing hidden pets does not reroll it.
+Hovering over a shiny plays a short GBA-style burst of gold pixel stars. They
+shoot outward, twinkle, and fade once per hover, without changing its colours.
 
 ## Download
 

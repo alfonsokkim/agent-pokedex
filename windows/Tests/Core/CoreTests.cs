@@ -29,6 +29,28 @@ var saved = new Appearance("virizion", true);
 Check(EncounterRules.Resolve(saved, "virizion", roll: () => throw new Exception("Unexpected reroll")) == saved, "Persistent appearance");
 Check(!EncounterRules.Resolve(saved, "virizion", true, () => 1).Shiny, "Release permits a reroll");
 Check(!EncounterRules.Resolve(saved, "gengar", roll: () => 1).Shiny, "Species changes cannot reuse an appearance");
+var burst = new ShinyHoverBurst();
+Check(burst.Progress(0) == null, "A hover burst starts inactive");
+burst.Begin(0);
+burst.Begin(3);
+Check(burst.Start == 0, "An active burst cannot restart before it dissipates");
+Check(burst.Progress(-1) == null && burst.Progress(10) == null, "The burst only renders during its lifetime");
+foreach (double scale in new[] { 1.0, 1.81546875, 3, 6 })
+    foreach (int size in new[] { 32, 64 })
+        for (int tick = 0; tick < ShinyHoverBurst.Duration; tick++)
+        {
+            double height = 48 + size * scale + 26;
+            var stars = burst.Stars(tick, 160, 48 + size * scale / 2, size * scale, size * scale, 320, height, scale).ToArray();
+            Check(stars.Length == 8, "Eight stars per burst");
+            foreach (var star in stars)
+                Check(star.Alpha >= 0 && star.Alpha <= 1 && star.X >= 0 && star.Y >= 0 &&
+                    star.X + 7 * star.Pixel <= 320 && star.Y + 7 * star.Pixel <= height,
+                    "Stars fade without escaping their transparent window");
+        }
+burst.Begin(12);
+Check(burst.Start == 12, "A later hover can replay a finished burst");
+burst.Reset();
+Check(burst.Start == null, "Recall or species changes clear the burst");
 var palette = SpritePalette.Parse("JASC-PAL\r\n0100\r\n1\r\n12 234 56\r\n");
 Check(palette[0] == new Rgb(12, 234, 56), "Palette channels");
 Check(SpriteIndices.At(new byte[] { 0x01, 0x20 }, 2, 4, 2, 0) == 2, "Packed palette indices are decoded without colour matching");

@@ -23,7 +23,7 @@ dotnet run --project windows/Tests/Windows/ClaudePet.WindowsTests.csproj -c Rele
 
 The native suite downloads the sprite sources into a temporary directory and
 decodes every normal/shiny pair through WPF. It also checks placement, context
-caption clearance, persisted encounters, packaged Codex artwork, and Windows
+caption clearance, persisted encounters, shiny hover stars, live window sizing, packaged Codex artwork, and Windows
 file-owner detection. It never installs hooks or opens an agent chat.
 
 The GitHub Windows build runs both suites before packaging. A successful cross
@@ -39,6 +39,8 @@ the app on a Windows desktop.
 - Check all five generation menus and confirm normal Virizion is green.
 - Recall and release pets. Each release rolls 1 in 25; hiding, sleeping, and
   restarting preserve an existing appearance. Picking a species starts normal.
+- Hover over a shiny. Gold pixel stars should burst outward and fade without
+  looping while the pointer stays still. Moving off and back replays the burst.
 - Check mixed-size Pokemon in every column corner, then a horizontal row with
   adjacent completed agents. Above-head captions must clear the CTX bar.
 - Check Klinklang or Bronzor turning through front/side/back frames without

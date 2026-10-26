@@ -77,6 +77,45 @@ static class WindowsTests
             bool saved = gengar.IsShiny;
             var restored = new PetView(agent, "gengar", SpriteSheet.Named("gengar")!);
             Check(restored.IsShiny == saved, "Pet recreation preserves its shiny roll");
+            var sparkle = new PetView(new Agent("test:hover", "idle", "", "test"), "gengar", SpriteSheet.Named("gengar")!);
+            sparkle.Update(sparkle.Agent);
+            sparkle.ApplyAppearance(SpriteSheet.Named("gengar")!, false);
+            sparkle.Hovering = true;
+            Check(sparkle.ShinyBurst.Start == null, "Normal Pokemon do not sparkle on hover");
+            sparkle.Hovering = false;
+            sparkle.ApplyAppearance(SpriteSheet.Named("gengar", true)!, true);
+            sparkle.Hovering = true;
+            int? started = sparkle.ShinyBurst.Start;
+            Check(started != null, "Shiny hover starts a burst");
+            for (int i = 0; i < 3; i++) sparkle.Animate();
+            sparkle.Hovering = true;
+            Check(sparkle.ShinyBurst.Start == started, "Repeated mouse tracking cannot restart stars");
+            var sparkleFrame = Render(sparkle, (int)sparkle.Width, (int)sparkle.Height);
+            Check(GoldPixels(sparkleFrame) > 30, "Shiny hover visibly draws gold stars");
+            Check(VisualTreeHelper.HitTest(sparkle, new Point(1, 1)) == null, "Stars cannot expand mouse targets into empty space");
+            sparkle.Hovering = false;
+            for (int i = 0; i < ShinyHoverBurst.Duration; i++) sparkle.Animate();
+            Check(GoldPixels(Render(sparkle, (int)sparkle.Width, (int)sparkle.Height)) == 0, "Stars dissipate completely after leaving");
+            sparkle.Hovering = true;
+            Check(sparkle.ShinyBurst.Start != started, "A fresh hover can replay the burst");
+            int? restarted = sparkle.ShinyBurst.Start;
+            for (int i = 0; i < ShinyHoverBurst.Duration; i++) sparkle.Animate();
+            sparkle.Hovering = true;
+            Check(sparkle.ShinyBurst.Start == restarted, "Holding the pointer cannot loop the burst");
+            Check(sparkle.IsShiny, "Hover never rerolls the appearance");
+            sparkle.SetPokemon("kyogre", SpriteSheet.Named("kyogre")!);
+            Check(!sparkle.IsShiny && sparkle.ShinyBurst.Start == null, "Species swaps clear existing stars");
+            var sizeWindow = new PetWindow(sparkle) { Left = -32000, Top = -32000 };
+            try
+            {
+                sizeWindow.Show();
+                sparkle.UpdateLayout();
+                Check(Math.Abs(sizeWindow.ActualHeight - sparkle.Height) < 1, "Large species fit their native window");
+                sparkle.SetPokemon("gengar", SpriteSheet.Named("gengar")!);
+                sparkle.UpdateLayout();
+                Check(Math.Abs(sizeWindow.ActualHeight - sparkle.Height) < 1, "Species swaps resize the native window");
+            }
+            finally { sizeWindow.Content = null; sizeWindow.Close(); }
             var picker = new PickerWindow("gengar", new HashSet<string>(), _ => { }, 494, 649);
             Check(picker.Content is System.Windows.Controls.ScrollViewer, "Generation picker scrolls within the display");
             picker.Close();
@@ -100,6 +139,7 @@ static class WindowsTests
                 Save(Render(canvas, 480, 900), Path.Combine(args[0], "windows-mixed-sprite-column.png"));
                 gengar.Update(agent);
                 Save(Render(gengar, (int)gengar.Width, (int)gengar.Height), Path.Combine(args[0], "windows-attention-context-caption.png"));
+                Save(sparkleFrame, Path.Combine(args[0], "windows-shiny-hover.png"));
             }
             Console.WriteLine($"Passed {checks} native Windows checks, including all 1,298 sprite variants.");
             return 0;
@@ -137,6 +177,13 @@ static class WindowsTests
         image.CopyPixels(pixels, image.PixelWidth * 4, 0);
         return Enumerable.Range(0, pixels.Length / 4).Count(i => pixels[i * 4 + 3] > 200 &&
             pixels[i * 4 + 2] > 200 && pixels[i * 4 + 2] > pixels[i * 4 + 1] * 2 && pixels[i * 4 + 2] > pixels[i * 4] * 2);
+    }
+    static int GoldPixels(BitmapSource image)
+    {
+        byte[] pixels = new byte[image.PixelWidth * image.PixelHeight * 4];
+        image.CopyPixels(pixels, image.PixelWidth * 4, 0);
+        return Enumerable.Range(0, pixels.Length / 4).Count(i => pixels[i * 4 + 3] > 100 &&
+            pixels[i * 4 + 2] > 200 && pixels[i * 4 + 1] > 140 && pixels[i * 4] < 130);
     }
     static void Save(BitmapSource image, string path)
     {

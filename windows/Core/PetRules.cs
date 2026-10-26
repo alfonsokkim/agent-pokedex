@@ -48,6 +48,39 @@ static class EncounterRules
 
 readonly record struct Rgb(byte R, byte G, byte B);
 
+/// One hover, one short burst, driven by the pet's existing animation clock.
+sealed class ShinyHoverBurst
+{
+    public const int Duration = 10;
+    public static readonly string[] Pattern = { "...G...", "...Y...", "..YWY..", "GYWWWYG", "..YWY..", "...Y...", "...G..." };
+    public int? Start { get; private set; }
+    public void Begin(int tick) { if (Progress(tick) == null) Start = tick; }
+    public void Reset() => Start = null;
+    public double? Progress(int tick) => Start is int start && tick >= start && tick - start < Duration
+        ? (tick - start) / (double)Duration : null;
+    public readonly record struct Star(double X, double Y, double Pixel, double Alpha);
+
+    public IEnumerable<Star> Stars(int tick, double centerX, double centerY, double boxWidth, double boxHeight,
+        double width, double height, double scale)
+    {
+        if (Progress(tick) is not double progress) yield break;
+        double basePixel = Math.Max(1, Math.Round(scale * 0.65, MidpointRounding.AwayFromZero));
+        double rx = Math.Max(0, Math.Min(boxWidth / 2 + 10 * scale, Math.Min(centerX, width - centerX) - 4 * basePixel));
+        double ry = Math.Max(0, Math.Min(boxHeight / 2 + 10 * scale, Math.Min(centerY, height - centerY) - 4 * basePixel));
+        for (int i = 0; i < 8; i++)
+        {
+            double p = Math.Clamp(progress * 1.2 - i % 3 * 0.08, 0, 1);
+            double angle = i * Math.PI / 4 + Math.PI / 8 + p * 0.25;
+            double distance = 0.25 + 0.75 * (1 - Math.Pow(1 - p, 2));
+            double pixel = p > 0.72 ? Math.Max(1, Math.Round(basePixel / 2, MidpointRounding.AwayFromZero)) : basePixel;
+            double x = Math.Round((centerX + Math.Cos(angle) * rx * distance) / pixel, MidpointRounding.AwayFromZero) * pixel - 3 * pixel;
+            double y = Math.Round((centerY + Math.Sin(angle) * ry * distance) / pixel, MidpointRounding.AwayFromZero) * pixel - 3 * pixel;
+            double twinkle = (tick + i) % 3 == 0 ? 0.65 : 1;
+            yield return new Star(x, y, pixel, Math.Min(1, (1 - p) * 2.5) * twinkle);
+        }
+    }
+}
+
 static class SpriteIndices
 {
     public static int At(byte[] pixels, int stride, int bits, int x, int y) =>

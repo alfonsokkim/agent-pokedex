@@ -58,6 +58,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build check
         run: swiftc -parse-as-library -swift-version 5 ClaudePet.swift -o "$RUNNER_TEMP/ClaudePet"
+      - name: Sprite and behaviour regression tests
+        run: |
+          zsh fetch-sprites.sh
+          for test in LayoutTests ShinyEncounterTests ShinyHoverTests AttentionTests; do
+            swiftc -O -parse-as-library -swift-version 5 -DTESTING -DPOKEMON ClaudePet.swift "Tests/$test.swift" -o "$RUNNER_TEMP/$test"
+            "$RUNNER_TEMP/$test"
+          done
       - name: Package
         run: |
           dir=claude-agent-pokedex-mac

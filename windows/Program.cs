@@ -1138,6 +1138,7 @@ sealed class PetView : FrameworkElement
     public double Pace = ColumnPace;
     public bool CaptionAbove;
     public bool IsShiny { get; private set; }
+    internal ShinyHoverBurst ShinyBurst { get; } = new();
     bool SpinsWhileWorking => PetRules.SpinningPokemon.Contains(Pokemon);
 
     Mood mood = Mood.Idle;
@@ -1204,12 +1205,25 @@ sealed class PetView : FrameworkElement
     /// plus its pacing room.
     public double FootprintWidth => 2 * sheet.HalfWidth * Scale + 2 * Pace;
 
+    Rect SpriteHitBox => new(HomeX + walkX + SpriteSize / 2 - sheet.HalfWidth * Scale,
+        Look.SpriteTop + sheet.Top * Scale, 2 * sheet.HalfWidth * Scale, VisibleHeight);
+
+    // Stars are decoration, not extra hover or click targets.
+    protected override HitTestResult? HitTestCore(PointHitTestParameters parameters) =>
+        !arriving && !IsGone && SpriteHitBox.Contains(parameters.HitPoint) ? new PointHitTestResult(this, parameters.HitPoint) : null;
+
     public void SetPokemon(string name, SpriteSheet newSheet)
     {
         Pokemon = name;
-        IsShiny = false;
         Prefs.Set("appearances", Agent.Pane, JsonSerializer.Serialize(new Appearance(name, false)));
-        sheet = newSheet;
+        ApplyAppearance(newSheet, false);
+    }
+
+    internal void ApplyAppearance(SpriteSheet selected, bool shiny)
+    {
+        sheet = selected;
+        IsShiny = shiny;
+        ShinyBurst.Reset();
         FitSize();
     }
 
@@ -1222,10 +1236,9 @@ sealed class PetView : FrameworkElement
         Prefs.Set("appearances", Agent.Pane, JsonSerializer.Serialize(appearance));
         if (SpriteSheet.Named(Pokemon, appearance.Shiny) is SpriteSheet selected)
         {
-            sheet = selected;
-            IsShiny = appearance.Shiny;
+            ApplyAppearance(selected, appearance.Shiny);
         }
-        else if (SpriteSheet.Named(Pokemon) is SpriteSheet normal) { sheet = normal; IsShiny = false; }
+        else if (SpriteSheet.Named(Pokemon) is SpriteSheet normal) ApplyAppearance(normal, false);
     }
 
     /// Matches the view's height to its sprite at the current size; its window follows.
@@ -1277,7 +1290,11 @@ sealed class PetView : FrameworkElement
             return;
         }
         bool wasGone = IsGone;
-        if (next == Mood.Stored && mood != Mood.Stored) transition = new Transition(TransitionKind.Recall, tick);
+        if (next == Mood.Stored && mood != Mood.Stored)
+        {
+            ShinyBurst.Reset();
+            transition = new Transition(TransitionKind.Recall, tick);
+        }
         else if (mood == Mood.Stored && next != Mood.Stored)
         {
             UpdateAppearance(reroll: true);
@@ -1431,6 +1448,7 @@ sealed class PetView : FrameworkElement
         if (lift > 0) DrawShadow(dc, rect, sheet.Size, 14, lift);
         var image = flash ? SpriteSheet.Tinted(sheet.Pixels[frame], sheet.Size, Look.HitRed, 0.85) : sheet.Frames[frame];
         DrawSprite(dc, image, rect, mirrored);
+        DrawShinyBurst(dc, lift);
 
         if (mood == Mood.Working) DrawWorkingDots(dc, rect);
         else if (mood is Mood.Sleeping or Mood.Stored) DrawSnores(dc, rect);
@@ -1440,6 +1458,29 @@ sealed class PetView : FrameworkElement
         // needs you), otherwise "is done" when it has finished.
         if (hovering || Util.Now() < labelUntil) DrawCaption(dc, Summary, headTop, badge: true);
         else if (mood == Mood.Done) DrawCaption(dc, $"{DisplayName} is done", headTop);
+    }
+
+    void DrawShinyBurst(DrawingContext dc, double lift)
+    {
+        if (!IsShiny || ShinyBurst.Progress(tick) == null) return;
+        var box = SpriteHitBox;
+        var colors = new Dictionary<char, Color>
+        {
+            ['G'] = Color.FromRgb(217, 130, 20), ['Y'] = Color.FromRgb(255, 217, 61), ['W'] = Color.FromRgb(255, 255, 224)
+        };
+        foreach (var star in ShinyBurst.Stars(tick, box.X + box.Width / 2, box.Y + box.Height / 2 - lift,
+            box.Width, box.Height, Width, Height, Scale))
+        {
+            foreach (var pair in colors)
+            {
+                var brush = new SolidColorBrush(pair.Value) { Opacity = star.Alpha };
+                for (int row = 0; row < ShinyHoverBurst.Pattern.Length; row++)
+                    for (int col = 0; col < ShinyHoverBurst.Pattern[row].Length; col++)
+                        if (ShinyHoverBurst.Pattern[row][col] == pair.Key)
+                            dc.DrawRectangle(brush, null, new Rect(Snap(star.X + col * star.Pixel), Snap(star.Y + row * star.Pixel),
+                                star.Pixel, star.Pixel));
+            }
+        }
     }
 
     static void DrawSprite(DrawingContext dc, ImageSource image, Rect rect, bool mirrored)
@@ -1658,12 +1699,13 @@ sealed class PetView : FrameworkElement
     Point windowStart;
     bool dragged, draggingAll;
 
-    bool Hovering
+    internal bool Hovering
     {
         set
         {
             if (hovering == value) return;
             hovering = value;
+            if (value && IsShiny && !arriving && mood != Mood.Stored && transition == null) ShinyBurst.Begin(tick);
             // The hovered pet comes to the front so its caption shows on top.
             if (value) (Window.GetWindow(this) as PetWindow)?.BringToTop();
             else OnHoverEnd?.Invoke(this);
