@@ -207,6 +207,8 @@ struct SpriteSheet {
         let indexedData = image.colorSpace?.model == .indexed && [1, 2, 4, 8].contains(bits)
             ? image.dataProvider?.data : nil
         let indices = indexedData.flatMap { CFDataGetLength($0) >= image.bytesPerRow * image.height ? CFDataGetBytePtr($0) : nil }
+        // Keep the provider's copied data alive while its raw bytes are read below.
+        defer { withExtendedLifetime(indexedData) {} }
         if let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
             for pixel in 0..<image.width * image.height {
                 let i = pixel * 4
