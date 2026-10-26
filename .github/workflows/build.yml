@@ -17,12 +17,25 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
       - name: Build
+        run: dotnet build windows/ClaudePet.csproj -c Release
+      - name: Core parity tests
+        run: dotnet run --project windows/Tests/Core/ClaudePet.CoreTests.csproj -c Release
+      - name: Native Windows parity tests
+        run: dotnet run --project windows/Tests/Windows/ClaudePet.WindowsTests.csproj -c Release -- windows-previews
+      - name: Upload Windows previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-parity-previews
+          path: windows-previews/*.png
+      - name: Publish
         run: >
           dotnet publish windows/ClaudePet.csproj -c Release -r win-x64 --self-contained
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true

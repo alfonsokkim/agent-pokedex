@@ -1,7 +1,7 @@
 # Claude and Codex Agent Pokédex
 
-A pixel Pokemon for every Claude or Codex session you have running on a Mac.
-Claude Code is also supported on Windows. They float at the edge of your screen
+A pixel Pokemon for every Claude or Codex session you have running on a Mac or Windows.
+They float at the edge of your screen
 and act out what their agent is doing, so you can tell at a glance which one is
 working, which one is waiting on you, and which one just finished.
 
@@ -18,7 +18,7 @@ working, which one is waiting on you, and which one just finished.
 Each session gets its own Pokemon and keeps it. All 649 Pokemon from Generations
 I through V are available in the Kanto, Johto, Hoenn, Sinnoh, and Unova pickers.
 
-On Mac, each new pet and each release from a Poke Ball has a 1-in-25 chance to be
+Each new pet and each release from a Poke Ball has a 1-in-25 chance to be
 shiny. It keeps those colours until recalled, including across app restarts.
 The picker uses normal colours; choosing a different Pokemon starts it in its
 normal form. Waking a sleeping pet or showing hidden pets does not reroll it.
@@ -31,8 +31,22 @@ normal form. Waking a sleeping pet or showing hidden pets does not reroll it.
 | **Windows** (Windows 10 or 11, 64-bit) | [claude-agent-pokedex-windows.zip](https://github.com/alfonsokkim/claude-agent-pokedex/releases/latest/download/claude-agent-pokedex-windows.zip) |
 
 The Mac app supports [Claude Code](https://claude.com/claude-code), the Codex
-CLI, Codex in the ChatGPT app, Conductor, and Orca. The Windows build currently
-supports Claude Code.
+CLI, Codex in the ChatGPT app, Conductor, and Orca. Windows supports Claude Code,
+herdr, and native Codex sessions using the local Codex thread database and writer
+locks. It checks CODEX_HOME (or ~/.codex) and Orca-managed Codex account homes.
+WSL and remote Codex sessions are not discovered by the native Windows app.
+
+Both versions use the same Gen I to V sprite sources, normal and shiny palettes,
+generation pickers, shiny encounter odds, centred columns, alternating row
+captions, context-left colours, and turn-in-place animations for object-like Pokemon.
+Codex questions, including asynchronous prompts, use the red attention animation
+until answered. Provider badges distinguish Claude from Codex without adding
+another prefix to the Pokemon's name.
+
+Chat navigation is platform-specific. On Windows a pet focuses the owning app or
+terminal window, with thread deep links for the Codex desktop app when available.
+Selecting a particular terminal tab or an Orca chat is not guaranteed. Conductor's
+Mac-specific navigation and project ordering are not advertised as Windows features.
 
 ## Install on a Mac
 
@@ -68,8 +82,10 @@ you log in, add **Claude Pet** under System Settings → General → Login Items
 
 ## Install on Windows
 
-Heads up: I lowkey haven't tested the Windows version yet, so if it's cooked,
-just let me know by [opening an issue](https://github.com/alfonsokkim/claude-agent-pokedex/issues) :)
+The Windows build has core behaviour tests and a native Windows test harness for
+sprite decoding, alignment, context-caption placement, and file-owner detection.
+GitHub's Windows build runs both suites. A real desktop smoke test is still needed
+for appearance, mixed-DPI monitors, terminal focus, and live CLI/app integrations.
 
 1. Unzip the download.
 2. Double-click **install.cmd**.
@@ -227,7 +243,9 @@ sprites and the pets' saved settings.
 | `install.sh`, `build.sh`, `fetch-sprites.sh`, `hooks.js` | The Mac installer and its parts |
 | `claude-pet`, `pet.md` | The Mac toggle command and `/pet` |
 | `Info.plist` | The Mac app bundle's metadata |
-| `windows/Program.cs` | The Windows app: a single C# file on WPF, which also installs itself |
+| `windows/Program.cs`, `windows/CodexSessions.cs` | The Windows WPF app, installer, and native Codex integration |
+| `windows/Core/`, `windows/pokemon.json` | Portable behaviour, catalog, palettes, downloads, and read-only Codex state parsing |
+| `windows/Tests/`, `windows/README.md` | Portable and native Windows parity checks, with a desktop smoke-test checklist |
 | `windows/install.cmd`, `windows/uninstall.cmd` | Double-click launchers for the Windows setup |
 | `.github/workflows/build.yml` | Builds both apps, and publishes the downloads on each release |
 
@@ -238,7 +256,7 @@ The Pokemon are Gen 3-style walking sprites from the
 project, and the Poke Ball is FireRed's item ball from
 [pret/pokefirered](https://github.com/pret/pokefirered). They're Nintendo and
 Game Freak's art, so they aren't included in this repo: the installers
-download them, for personal use. The Mac app uses the project's separate normal
+download them, for personal use. Both apps use the project's separate normal
 and shiny overworld palettes, sharing the same walking frames for both variants.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a

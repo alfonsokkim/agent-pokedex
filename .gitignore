@@ -1,6 +1,9 @@
 sprites/
 sessions/
 pokemon.json
+!windows/pokemon.json
 .DS_Store
 windows/bin/
 windows/obj/
+windows/**/bin/
+windows/**/obj/

@@ -1,6 +1,6 @@
-// Claude Pet for Windows: a floating pixel Pokemon for every Claude Code
-// session you're running. A port of the macOS app (../ClaudePet.swift) with
-// the same behaviour, sprites and session files; the README has the tour.
+// Claude Pet for Windows: a floating pixel Pokemon for every Claude or Codex
+// session you're running. Shared sprite sources and matching pet behaviour;
+// the README describes platform-specific integrations and verification.
 //
 //   ClaudePet.exe                 the pets
 //   ClaudePet.exe --install       set up (what install.cmd runs)
@@ -45,6 +45,13 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        if (args.Any(a => a is "--install" or "--uninstall" or "--remove-hooks") &&
+            Environment.GetEnvironmentVariable("CLAUDE_PET_DATA_DIRECTORY") != null)
+        {
+            MessageBox.Show("Unset CLAUDE_PET_DATA_DIRECTORY before using installer commands. The test-data override cannot change an installation.",
+                "Claude Pet", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return 1;
+        }
         if (args.Contains("--hook"))
         {
             HookSessions.HandleHook();
@@ -55,8 +62,8 @@ static class Program
             Win32.AttachConsole(-1); // print into the terminal that ran us
             foreach (var agent in Agents.Current())
             {
-                var context = agent.ContextUsed is double used ? $"ctx {Math.Round(used * 100)}%" : "ctx ?";
-                Console.WriteLine($"{agent.Pane} {agent.Status} {agent.Project} {context}");
+                var context = agent.ContextUsed is double used ? $"ctx {Math.Round((1 - used) * 100)}% left" : "ctx ?";
+                Console.WriteLine($"{agent.Pane} {agent.Status} {agent.Kind} {agent.Label} {context}");
             }
             return 0;
         }
@@ -97,7 +104,7 @@ static class Program
 static class Paths
 {
     public static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    public static readonly string Data =
+    public static readonly string Data = Environment.GetEnvironmentVariable("CLAUDE_PET_DATA_DIRECTORY") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClaudePet");
     public static readonly string Exe = Path.Combine(Data, "ClaudePet.exe");
     public static readonly string Sprites = Path.Combine(Data, "sprites");
@@ -141,6 +148,7 @@ static class Util
 /// dragged, the line-up), in %LOCALAPPDATA%\ClaudePet\settings.json.
 static class Prefs
 {
+    static readonly object gate = new();
     static JsonObject? root;
     static JsonObject Root => root ??= Json.ReadObject(Paths.Prefs) ?? new JsonObject();
 
@@ -154,19 +162,24 @@ static class Prefs
         return section;
     }
 
-    public static string? Get(string section, string key) => Json.Str(Section(section)[key]);
+    public static string? Get(string section, string key)
+    {
+        lock (gate) return Json.Str(Section(section)[key]);
+    }
 
     public static void Set(string section, string key, string? value)
     {
-        if (value == null) Section(section).Remove(key);
-        else Section(section)[key] = value;
-        Save();
+        lock (gate)
+        {
+            if (value == null) Section(section).Remove(key);
+            else Section(section)[key] = value;
+            Save();
+        }
     }
 
     public static void Clear(string section)
     {
-        Root.Remove(section);
-        Save();
+        lock (gate) { Root.Remove(section); Save(); }
     }
 
     static void Save() => Json.WriteAtomic(Paths.Prefs, Root.ToJsonString(Json.Pretty));
@@ -208,15 +221,15 @@ static class LastActive
 
 static class Roster
 {
-    public static readonly string[] Names =
+    public static readonly Species[] Species = Load();
+    public static readonly string[] Names = Species.Select(p => p.Asset).ToArray();
+    static Species[] Load()
     {
-        "bulbasaur", "charmander", "squirtle", "pikachu", "oddish", "psyduck", "poliwag", "abra",
-        "geodude", "slowpoke", "gastly", "gengar", "cubone", "magikarp", "gyarados", "lapras", "ditto",
-        "eevee", "vaporeon", "jolteon", "flareon", "espeon", "umbreon", "leafeon", "glaceon", "sylveon",
-        "kabuto", "snorlax", "articuno", "zapdos", "moltres", "dragonite", "sentret", "wooper", "quagsire",
-    };
-
-    public static string Display(string name) => char.ToUpperInvariant(name[0]) + name[1..];
+        using var stream = typeof(Roster).Assembly.GetManifestResourceStream("ClaudePet.pokemon.json")
+            ?? throw new InvalidDataException("Missing Pokemon catalog.");
+        return PokemonCatalog.Parse(stream);
+    }
+    public static string Display(string name) => Species.FirstOrDefault(p => p.Asset == name)?.Display ?? name;
 }
 
 /// A follower sheet: square frames for down x2, up x2, left x2, and
@@ -242,12 +255,15 @@ sealed class SpriteSheet
 
     static readonly Dictionary<string, SpriteSheet?> cache = new();
 
-    public static SpriteSheet? Named(string name)
+    public static SpriteSheet? Named(string name, bool shiny = false)
     {
-        if (!cache.TryGetValue(name, out var sheet))
+        string key = name + (shiny ? ":shiny" : ":normal");
+        if (!cache.TryGetValue(key, out var sheet))
         {
-            sheet = Load(Path.Combine(Paths.Sprites, name + ".png"), minimumFrames: 6);
-            cache[name] = sheet;
+            string palettePath = Path.Combine(Paths.Sprites, "palettes", name + (shiny ? "_shiny.pal" : "_normal.pal"));
+            if (!File.Exists(palettePath)) return null;
+            sheet = Load(Path.Combine(Paths.Sprites, name + ".png"), minimumFrames: 6, palettePath);
+            if (sheet != null) cache[key] = sheet;
         }
         return sheet;
     }
@@ -256,13 +272,23 @@ sealed class SpriteSheet
     public static readonly SpriteSheet? Pokeball = Load(Path.Combine(Paths.Sprites, "_pokeball.png"), minimumFrames: 1);
 
     /// Decodes a row of square frames and makes the background (palette entry 0) transparent.
-    static SpriteSheet? Load(string path, int minimumFrames)
+    static SpriteSheet? Load(string path, int minimumFrames, string? palettePath = null)
     {
         if (!File.Exists(path)) return null;
         try
         {
             var decoder = BitmapDecoder.Create(new Uri(path), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-            var source = decoder.Frames[0];
+            BitmapSource source = decoder.Frames[0];
+            if (palettePath != null)
+            {
+                var colours = SpritePalette.Parse(File.ReadAllText(palettePath));
+                if (source.Palette == null || source.Format.BitsPerPixel > 8) return null;
+                int stride = (source.PixelWidth * source.Format.BitsPerPixel + 7) / 8;
+                byte[] indices = new byte[stride * source.PixelHeight];
+                source.CopyPixels(indices, stride, 0);
+                source = BitmapSource.Create(source.PixelWidth, source.PixelHeight, source.DpiX, source.DpiY,
+                    source.Format, new BitmapPalette(colours.Select(c => Color.FromRgb(c.R, c.G, c.B)).ToList()), indices, stride);
+            }
             var bgra = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
             int w = bgra.PixelWidth, h = bgra.PixelHeight;
             var all = new byte[w * h * 4];
@@ -330,9 +356,14 @@ sealed class SpriteSheet
 
 /// One coding agent: a herdr pane, or a Claude Code session reported by the
 /// pets' hooks (its pane is then "session:<id>").
+enum AgentKind { Claude, Codex }
+
 sealed record Agent(string Pane, string Status, string Title, string Project, int? Pid = null)
 {
-    public string Label => Title.Length == 0 ? Project : $"{Project}: {Title}";
+    public AgentKind Kind { get; init; }
+    public string Workspace { get; init; } = "";
+    public string? HostApp { get; init; }
+    public string Label => PetRules.Label(Project, Workspace, Title);
     /// How full its context window is, 0 to 1, when known.
     public double? ContextUsed { get; init; }
 }
@@ -347,12 +378,14 @@ static class Agents
         return (herdr ?? new List<Agent>()).Concat(HookSessions.Agents(records, herdrRunning: herdr != null))
             .Select(agent => agent with { ContextUsed = Context.Used(agent, records) })
             .Concat(ClaudeApp.Agents())
+            .Concat(CodexSessions.Agents())
             .ToList();
     }
 
     /// Switches to an agent: through herdr for its panes, otherwise by bringing its terminal forward.
     public static void Focus(Agent agent)
     {
+        if (agent.Pane.StartsWith(CodexSessions.Prefix)) { CodexSessions.Focus(agent); return; }
         if (agent.Pane.StartsWith(ClaudeApp.Prefix))
         {
             var title = agent.Pane[ClaudeApp.Prefix.Length..];
@@ -371,6 +404,25 @@ static class Agents
 
 static class Processes
 {
+    public static string? HostingApp(int pid)
+    {
+        var table = Table();
+        var seen = new HashSet<int>();
+        while (pid > 0 && seen.Add(pid))
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (process.MainWindowHandle != IntPtr.Zero) return process.ProcessName;
+            }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            if (!table.TryGetValue(pid, out var entry)) break;
+            pid = entry.Parent;
+        }
+        return null;
+    }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct ProcessEntry
     {
@@ -715,7 +767,8 @@ static class Herdr
                     Json.Str(a["pane_id"])!,
                     Json.Str(a["agent_status"]) ?? "unknown",
                     Json.Str(a["terminal_title_stripped"]) ?? "",
-                    Util.ProjectName(Json.Str(a["foreground_cwd"]) ?? Json.Str(a["cwd"]) ?? "")))
+                    Util.ProjectName(Json.Str(a["foreground_cwd"]) ?? Json.Str(a["cwd"]) ?? ""))
+                    { Kind = (Json.Str(a["agent_type"]) ?? "").Contains("codex", StringComparison.OrdinalIgnoreCase) ? AgentKind.Codex : AgentKind.Claude })
                 .ToList();
         }
         catch
@@ -999,7 +1052,7 @@ readonly struct BallThrow
 
 static class Look
 {
-    public const double Width = 320, SpriteTop = 40, BottomPad = 26, CaptionSize = 12;
+    public const double Width = 320, SpriteTop = 48, BottomPad = 26, CaptionSize = 12;
     /// Points per sprite pixel before rounding to the screen's pixels, from the Size slider (3 is medium).
     public static double BaseScale = PetSize.Saved;
     public static readonly Typeface CaptionFace =
@@ -1009,6 +1062,17 @@ static class Look
     public static readonly Brush Grey = Frozen(Color.FromRgb(116, 120, 136)); // snoring z's
     public static readonly Brush Pill = Frozen(Color.FromArgb(217, 26, 26, 26));
     public static readonly Brush Shadow = Frozen(Color.FromArgb(46, 0, 0, 0));
+    public static readonly Brush ClaudeAccent = Frozen(Color.FromRgb(217, 119, 87));
+    public static readonly BitmapSource CodexBadge = LoadCodexBadge();
+
+    static BitmapSource LoadCodexBadge()
+    {
+        var source = new BitmapImage(new Uri("pack://application:,,,/ClaudePet;component/Assets/codex.png"));
+        var cropped = new CroppedBitmap(source, new Int32Rect(source.PixelWidth / 4, source.PixelHeight / 4,
+            source.PixelWidth / 2, source.PixelHeight / 2));
+        cropped.Freeze();
+        return cropped;
+    }
 
     public static Brush Frozen(Color color)
     {
@@ -1049,7 +1113,8 @@ sealed class PetView : FrameworkElement
     public string Pokemon { get; private set; }
     SpriteSheet sheet;
 
-    public Action<PetView>? OnMoved, OnPickPokemon, OnResize, OnHoverEnd;
+    public Action<PetView>? OnMoved, OnResize, OnHoverEnd;
+    public Action<PetView, int, int>? OnPickGeneration;
     /// Shift-dragging moves every pet: called with how far the mouse has gone, then null when it's let go.
     public Action<Vector?>? OnDragAll;
     /// Once it has gone into its ball, to close up the gap; when it's coming
@@ -1064,6 +1129,9 @@ sealed class PetView : FrameworkElement
     /// How far it paces either side while working: less in a row, where
     /// neighbours stand close enough that they'd walk into each other.
     public double Pace = ColumnPace;
+    public bool CaptionAbove;
+    public bool IsShiny { get; private set; }
+    bool SpinsWhileWorking => PetRules.SpinningPokemon.Contains(Pokemon);
 
     Mood mood = Mood.Idle;
     int tick = Random.Shared.Next(64); // so pets don't move in lockstep
@@ -1081,12 +1149,14 @@ sealed class PetView : FrameworkElement
 
     /// Resting out of sight, once it has gone into its ball.
     public bool IsGone => mood == Mood.Stored && transition == null;
+    internal Mood CurrentMood => mood;
 
     public PetView(Agent agent, string pokemon, SpriteSheet sheet)
     {
         Agent = agent;
         Pokemon = pokemon;
         this.sheet = sheet;
+        UpdateAppearance();
         if (LastActive.Get(agent.Pane) is double saved) lastBusy = saved;
         else LastActive.Set(agent.Pane, lastBusy = Util.Now());
         Width = Look.Width;
@@ -1109,6 +1179,7 @@ sealed class PetView : FrameworkElement
     /// Screen points per sprite pixel: about three, rounded to whole device pixels so they stay crisp.
     public double Scale => Math.Max(1, Math.Round(Look.BaseScale * dpi)) / dpi;
     public double SpriteSize => sheet.Size * Scale;
+    double ContextPixel => Math.Max(1, Math.Round(2 * Look.BaseScale / 3 * dpi)) / dpi;
     /// Where the sprite rests: the middle of the window, so the caption under it
     /// can centre. At a screen edge the window simply hangs past it.
     public double HomeX => Snap((Look.Width - SpriteSize) / 2);
@@ -1129,8 +1200,25 @@ sealed class PetView : FrameworkElement
     public void SetPokemon(string name, SpriteSheet newSheet)
     {
         Pokemon = name;
+        IsShiny = false;
+        Prefs.Set("appearances", Agent.Pane, JsonSerializer.Serialize(new Appearance(name, false)));
         sheet = newSheet;
         FitSize();
+    }
+
+    void UpdateAppearance(bool reroll = false)
+    {
+        Appearance? previous = null;
+        try { previous = JsonSerializer.Deserialize<Appearance>(Prefs.Get("appearances", Agent.Pane) ?? "null"); }
+        catch (JsonException) { }
+        var appearance = EncounterRules.Resolve(previous, Pokemon, reroll);
+        Prefs.Set("appearances", Agent.Pane, JsonSerializer.Serialize(appearance));
+        if (SpriteSheet.Named(Pokemon, appearance.Shiny) is SpriteSheet selected)
+        {
+            sheet = selected;
+            IsShiny = appearance.Shiny;
+        }
+        else if (SpriteSheet.Named(Pokemon) is SpriteSheet normal) { sheet = normal; IsShiny = false; }
     }
 
     /// Matches the view's height to its sprite at the current size; its window follows.
@@ -1185,6 +1273,7 @@ sealed class PetView : FrameworkElement
         if (next == Mood.Stored && mood != Mood.Stored) transition = new Transition(TransitionKind.Recall, tick);
         else if (mood == Mood.Stored && next != Mood.Stored)
         {
+            UpdateAppearance(reroll: true);
             // Called back mid-recall, it just comes straight back out.
             transition = wasGone ? null : new Transition(TransitionKind.Release, tick);
             arriving = wasGone;
@@ -1234,15 +1323,7 @@ sealed class PetView : FrameworkElement
         Agents.Focus(Agent);
     }
 
-    public string Summary => mood switch
-    {
-        Mood.Alert => $"{DisplayName}: {Agent.Project} needs you",
-        Mood.Done => $"{DisplayName}: {Agent.Project} is done",
-        Mood.Working => $"{DisplayName}: {Agent.Project} is working",
-        Mood.Sleeping => $"{DisplayName} is asleep",
-        Mood.Stored => $"{DisplayName} is resting",
-        _ => $"{DisplayName}: {Agent.Project}",
-    };
+    public string Summary => Agent.Label;
 
     /// Advances one animation step: walks while working, and walks home after.
     public void Animate()
@@ -1258,7 +1339,7 @@ sealed class PetView : FrameworkElement
             }
         }
         const double speed = 2;
-        if (mood == Mood.Working)
+        if (mood == Mood.Working && !SpinsWhileWorking)
         {
             walkX += walkDirection * speed;
             if (Math.Abs(walkX) >= Pace) walkDirection = walkX > 0 ? -1 : 1;
@@ -1293,7 +1374,8 @@ sealed class PetView : FrameworkElement
         int frame = tick / 6 % 2;
         bool mirrored = false, flash = false;
         double lift = 0;
-        bool walking = walkX != 0 || mood == Mood.Working;
+        bool spinning = mood == Mood.Working && SpinsWhileWorking;
+        bool walking = !spinning && (walkX != 0 || mood == Mood.Working);
         if (walking)
         {
             bool right = walkDirection > 0;
@@ -1303,6 +1385,14 @@ sealed class PetView : FrameworkElement
                 frame = 4 + step;
                 mirrored = right;
             }
+        }
+
+        if (spinning)
+        {
+            int turn = tick / 3 % 4, turnStep = tick / 2 % 2;
+            frame = turn switch { 0 => turnStep, 1 => 4 + turnStep, 2 => 2 + turnStep,
+                _ => sheet.Frames.Length >= 8 ? 6 + turnStep : 4 + turnStep };
+            mirrored = turn == 3 && sheet.Frames.Length < 8;
         }
 
         switch (mood)
@@ -1337,11 +1427,12 @@ sealed class PetView : FrameworkElement
 
         if (mood == Mood.Working) DrawWorkingDots(dc, rect);
         else if (mood is Mood.Sleeping or Mood.Stored) DrawSnores(dc, rect);
-        DrawContextBarIfShown(dc, Look.SpriteTop + sheet.Top * Scale);
+        double headTop = rect.Top + sheet.Top * Scale;
+        DrawContextBarIfShown(dc, headTop);
         // One caption under the pet: its status while hovered (or just after it
         // needs you), otherwise "is done" when it has finished.
-        if (hovering || Util.Now() < labelUntil) DrawCaption(dc, Summary);
-        else if (mood == Mood.Done) DrawCaption(dc, $"{DisplayName} is done");
+        if (hovering || Util.Now() < labelUntil) DrawCaption(dc, Summary, headTop, badge: true);
+        else if (mood == Mood.Done) DrawCaption(dc, $"{DisplayName} is done", headTop);
     }
 
     static void DrawSprite(DrawingContext dc, ImageSource image, Rect rect, bool mirrored)
@@ -1394,23 +1485,39 @@ sealed class PetView : FrameworkElement
 
     /// A caption centred under the pet, such as "Pikachu is done" or its status,
     /// slid inward only as far as it takes to stay on screen.
-    void DrawCaption(DrawingContext dc, string text)
+    void DrawCaption(DrawingContext dc, string text, double headTop, bool badge = false)
     {
         var room = OnScreenRect();
         room = new Rect(room.X + 4, room.Y, Math.Max(0, room.Width - 8), room.Height);
         string shown = text;
         var formatted = Caption(shown, dpi);
-        for (int keep = text.Length; formatted.Width + 12 > room.Width && keep > 1;)
+        double badgeRoom = badge ? 12 : 0;
+        for (int keep = text.Length; formatted.Width + 12 + badgeRoom > room.Width && keep > 1;)
         {
             keep--;
             shown = text[..keep] + "…";
             formatted = Caption(shown, dpi);
         }
-        double width = formatted.Width + 12;
+        double width = formatted.Width + 12 + badgeRoom;
         double x = Math.Min(Math.Max(HomeX + SpriteSize / 2 - width / 2, room.Left), room.Right - width);
-        var pill = new Rect(Snap(x), Ground + 2, width, formatted.Height + 4);
+        double height = formatted.Height + 4;
+        double y = CaptionTop(headTop, height);
+        var pill = new Rect(Snap(x), Snap(y), width, height);
         dc.DrawRoundedRectangle(Look.Pill, null, pill, pill.Height / 2, pill.Height / 2);
-        dc.DrawText(formatted, new Point(pill.X + 6, pill.Y + 2));
+        if (badge)
+        {
+            if (Agent.Kind == AgentKind.Codex)
+                dc.DrawImage(Look.CodexBadge, new Rect(pill.X + 3, pill.Y + (pill.Height - 12) / 2, 12, 12));
+            else dc.DrawEllipse(Look.ClaudeAccent, null, new Point(pill.X + 9, pill.Y + pill.Height / 2), 3, 3);
+        }
+        dc.DrawText(formatted, new Point(pill.X + 6 + badgeRoom, pill.Y + 2));
+    }
+
+    internal double CaptionTop(double headTop, double height)
+    {
+        bool contextShown = Agent.ContextUsed is double used && (hovering || used >= 0.8);
+        double anchor = headTop - (contextShown ? 3 + 7 * ContextPixel : 0);
+        return CaptionAbove ? Math.Max(0, anchor - height - 5) : Ground + 2;
     }
 
     /// Three pixel z's drifting up and to the right off the top of the pet's
@@ -1448,7 +1555,7 @@ sealed class PetView : FrameworkElement
     void DrawContextBar(DrawingContext dc, double used, double headTop)
     {
         const int width = 42, height = 7, track = 24;
-        double px = Math.Max(1, Math.Round(2 * Look.BaseScale / 3 * dpi)) / dpi; // 2 at medium
+        double px = ContextPixel;
         double left = Snap(HomeX + SpriteSize / 2 - width * px / 2);
         double top = Snap(headTop - 3 - height * px);
         void Fill(Brush brush, int x, int y, int w = 1, int h = 1) =>
@@ -1621,7 +1728,13 @@ sealed class PetView : FrameworkElement
             foreach (var pet in resting) letOut.Items.Add(Item($"{pet.DisplayName} · {pet.Agent.Label}", pet.Wake));
             menu.Items.Add(letOut);
         }
-        menu.Items.Add(Item("Pokemon…", () => OnPickPokemon?.Invoke(this)));
+        var pokemonMenu = new MenuItem { Header = "Pokemon" };
+        foreach (var generation in PokemonCatalog.Generations)
+        {
+            var selected = generation;
+            pokemonMenu.Items.Add(Item(selected.Title, () => OnPickGeneration?.Invoke(this, selected.First, selected.Last)));
+        }
+        menu.Items.Add(pokemonMenu);
         menu.Items.Add(new Separator());
 
         // Line Up Pets: vertical or horizontal, then a corner. Picking any of
@@ -1804,7 +1917,7 @@ sealed class PickerWindow : Window
 {
     bool closing;
 
-    public PickerWindow(string current, ISet<string> taken, Action<string> onPick)
+    public PickerWindow(string current, ISet<string> taken, Action<string> onPick, int first = 1, int last = 649)
     {
         Title = "Pick a Pokemon";
         WindowStyle = WindowStyle.ToolWindow;
@@ -1830,7 +1943,7 @@ sealed class PickerWindow : Window
         var grid = new UniformGrid { Columns = 8, Margin = new Thickness(8) };
         var highlight = new SolidColorBrush(Color.FromArgb(77, 0, 120, 215));
         var hover = new SolidColorBrush(Color.FromArgb(26, 0, 0, 0));
-        foreach (var name in Roster.Names)
+        foreach (var name in Roster.Species.Where(p => p.Id >= first && p.Id <= last).Select(p => p.Asset))
         {
             if (SpriteSheet.Named(name) is not SpriteSheet sheet) continue;
             bool inUse = taken.Contains(name);
@@ -1872,7 +1985,8 @@ sealed class PickerWindow : Window
             };
             grid.Children.Add(cell);
         }
-        Content = grid;
+        Content = new ScrollViewer { Content = grid, MaxHeight = Math.Max(200, SystemParameters.WorkArea.Height - 120),
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
 
         Closing += (_, _) =>
         {
@@ -1988,7 +2102,8 @@ static class Stacking
         double depth = PetView.CaptionDepth;
         double room = visible.Height - Base - Top - heights.Sum() - pets.Count * depth;
         double gap = pets.Count > 1 ? Math.Max(0, Math.Min(Gap, room / (pets.Count - 1))) : 0;
-        double Left(PetView pet) => onLeft ? visible.Left + Margin : visible.Right - Margin - pet.SpriteSize;
+        double centerX = PetRules.ColumnCenter(visible.Left, visible.Right, Margin, pets.Select(p => p.FootprintWidth), onLeft);
+        double Left(PetView pet) => centerX - pet.SpriteSize / 2;
 
         if (arrangement.AtTop)
         {
@@ -2096,9 +2211,9 @@ sealed class PetsController
             {
                 OnMoved = p => Prefs.Set("positions", p.Pokemon,
                     FormattableString.Invariant($"{windows[p.Agent.Pane].Left},{windows[p.Agent.Pane].Top}")),
-                OnPickPokemon = p => new PickerWindow(p.Pokemon,
+                OnPickGeneration = (p, first, last) => new PickerWindow(p.Pokemon,
                     pets.Values.Where(o => o != p).Select(o => o.Pokemon).ToHashSet(),
-                    choice => Choose(choice, p)).Show(),
+                    choice => Choose(choice, p), first, last).Show(),
                 OnLineUp = () =>
                 {
                     Prefs.Clear("positions");
@@ -2208,6 +2323,7 @@ sealed class PetsController
         foreach (var pane in order)
         {
             if (!pets.TryGetValue(pane, out var pet) || !windows.TryGetValue(pane, out var window)) continue;
+            pet.CaptionAbove = false;
             if (pet.IsGone)
             {
                 // Out of sight, taking no room; it's put straight in place when it comes back.
@@ -2220,7 +2336,11 @@ sealed class PetsController
             else
                 stack.Add((pet, window));
         }
-        foreach (var (pet, _) in stack) pet.Pace = arrangement.Vertical ? PetView.ColumnPace : PetView.RowPace;
+        for (int i = 0; i < stack.Count; i++)
+        {
+            stack[i].Pet.Pace = arrangement.Vertical ? PetView.ColumnPace : PetView.RowPace;
+            stack[i].Pet.CaptionAbove = !arrangement.Vertical && i % 2 == 1;
+        }
         var origins = Stacking.Origins(stack.Select(s => s.Pet).ToList(), visible, arrangement)
             .Select(o => o + arrangement.Offset).ToList();
         // Last first, each brought in front of the next, so in a column a pet's
@@ -2328,9 +2448,6 @@ sealed class PetsController
 
 static class Setup
 {
-    const string SpriteBase = "https://raw.githubusercontent.com/rh-hideout/pokeemerald-expansion/master/graphics/pokemon";
-    const string PokeballUrl =
-        "https://raw.githubusercontent.com/pret/pokefirered/master/graphics/object_events/pics/misc/item_ball.png";
     const string Title = "Claude Agent Pokedex";
 
     // Each event the pets react to. Notification is limited to the prompts that
@@ -2358,7 +2475,7 @@ static class Setup
             Process.Start(new ProcessStartInfo(Paths.Exe) { UseShellExecute = true });
             MessageBox.Show(
                 "Claude Pet is installed and running.\n\n" +
-                "A pet appears for each Claude Code session as soon as it does something. " +
+                "A pet appears for each Claude Code or live native Codex session. " +
                 "Type /pet in Claude Code to summon or dismiss them." +
                 (missing > 0 ? $"\n\n{missing} sprites couldn't be downloaded. Run install.cmd again to retry." : ""),
                 Title);
@@ -2436,20 +2553,8 @@ static class Setup
     /// Downloads the sprites the pets use; returns how many couldn't be fetched.
     static int FetchSprites()
     {
-        Directory.CreateDirectory(Paths.Sprites);
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        var files = Roster.Names
-            .Select(name => (File: name + ".png", Url: $"{SpriteBase}/{name}/overworld.png"))
-            .Append((File: "_pokeball.png", Url: PokeballUrl));
-        int missing = 0;
-        foreach (var (file, url) in files)
-        {
-            var path = Path.Combine(Paths.Sprites, file);
-            if (File.Exists(path) && new FileInfo(path).Length > 0) continue;
-            try { File.WriteAllBytes(path, http.GetByteArrayAsync(url).GetAwaiter().GetResult()); }
-            catch { missing++; }
-        }
-        return missing;
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+        return SpriteDownloads.Fetch(http, Paths.Sprites, Roster.Names).GetAwaiter().GetResult();
     }
 
     /// Adds or removes the pets' hooks in Claude Code's settings.json, leaving

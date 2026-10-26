@@ -15,4 +15,12 @@
     <Version>1.1.0</Version>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.33" />
+    <EmbeddedResource Include="pokemon.json" LogicalName="ClaudePet.pokemon.json" />
+    <Compile Remove="Tests/**/*.cs" />
+    <Resource Include="Assets/codex.png" />
+    <InternalsVisibleTo Include="ClaudePet.WindowsTests" />
+  </ItemGroup>
+
 </Project>
