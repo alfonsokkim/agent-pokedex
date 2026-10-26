@@ -155,6 +155,7 @@ static class WindowsTests
         var host = new Window
         {
             Width = width, Height = height, WindowStyle = WindowStyle.None, ShowInTaskbar = false,
+            ResizeMode = ResizeMode.NoResize, AllowsTransparency = true, Background = Brushes.Transparent,
             ShowActivated = false, Left = -32000, Top = -32000, Content = view
         };
         try
