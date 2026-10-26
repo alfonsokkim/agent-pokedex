@@ -68,8 +68,9 @@ static class WindowsTests
             }
             gengar.Update(agent with { Status = "working" });
             Check(gengar.CurrentMood == Mood.Working, "Answering stops the red animation");
-            Check(flashingRed > RedPixels(Render(gengar, (int)gengar.Width, (int)gengar.Height)) + 100,
-                "The attention state visibly renders red, not just a changed status value");
+            int workingRed = RedPixels(Render(gengar, (int)gengar.Width, (int)gengar.Height));
+            Check(flashingRed > workingRed + 100,
+                $"The attention state visibly renders red, not just a changed status value (alert {flashingRed}, working {workingRed})");
             gengar.CaptionAbove = true;
             double caption = gengar.CaptionTop(80, 20);
             Check(caption + 20 < 80 - 3 - 7 * 2, "Above-head caption must clear the context bar");
@@ -109,12 +110,26 @@ static class WindowsTests
 
     static RenderTargetBitmap Render(FrameworkElement view, int width, int height)
     {
-        view.Measure(new Size(width, height));
-        view.Arrange(new Rect(0, 0, width, height));
-        view.UpdateLayout();
-        var image = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        image.Render(view);
-        return image;
+        // A presentation source lets WPF commit invalidated animation drawings.
+        // An unattached visual can otherwise return a cached frame indefinitely.
+        var host = new Window
+        {
+            Width = width, Height = height, WindowStyle = WindowStyle.None, ShowInTaskbar = false,
+            ShowActivated = false, Left = -32000, Top = -32000, Content = view
+        };
+        try
+        {
+            host.Show();
+            view.InvalidateVisual();
+            view.Measure(new Size(width, height));
+            view.Arrange(new Rect(0, 0, width, height));
+            view.UpdateLayout();
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            var image = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            image.Render(view);
+            return image;
+        }
+        finally { host.Content = null; host.Close(); }
     }
     static int RedPixels(BitmapSource image)
     {
