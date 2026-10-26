@@ -279,15 +279,19 @@ sealed class SpriteSheet
         {
             var decoder = BitmapDecoder.Create(new Uri(path), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
             BitmapSource source = decoder.Frames[0];
+            byte[]? indices = null;
+            int bits = source.Format.BitsPerPixel, indexedStride = (source.PixelWidth * bits + 7) / 8;
+            if (source.Palette != null && bits is 1 or 2 or 4 or 8)
+            {
+                indices = new byte[indexedStride * source.PixelHeight];
+                source.CopyPixels(indices, indexedStride, 0);
+            }
             if (palettePath != null)
             {
                 var colours = SpritePalette.Parse(File.ReadAllText(palettePath));
-                if (source.Palette == null || source.Format.BitsPerPixel > 8) return null;
-                int stride = (source.PixelWidth * source.Format.BitsPerPixel + 7) / 8;
-                byte[] indices = new byte[stride * source.PixelHeight];
-                source.CopyPixels(indices, stride, 0);
+                if (indices == null) return null;
                 source = BitmapSource.Create(source.PixelWidth, source.PixelHeight, source.DpiX, source.DpiY,
-                    source.Format, new BitmapPalette(colours.Select(c => Color.FromRgb(c.R, c.G, c.B)).ToList()), indices, stride);
+                    source.Format, new BitmapPalette(colours.Select(c => Color.FromRgb(c.R, c.G, c.B)).ToList()), indices, indexedStride);
             }
             var bgra = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
             int w = bgra.PixelWidth, h = bgra.PixelHeight;
@@ -299,7 +303,10 @@ sealed class SpriteSheet
                 : Color.FromRgb(all[2], all[1], all[0]); // no palette: the top-left pixel
             for (int i = 0; i < all.Length; i += 4)
             {
-                if (Math.Abs(all[i] - key.B) < 3 && Math.Abs(all[i + 1] - key.G) < 3 && Math.Abs(all[i + 2] - key.R) < 3)
+                int pixel = i / 4;
+                bool background = indices != null ? SpriteIndices.At(indices, indexedStride, bits, pixel % w, pixel / w) == 0 :
+                    Math.Abs(all[i] - key.B) < 3 && Math.Abs(all[i + 1] - key.G) < 3 && Math.Abs(all[i + 2] - key.R) < 3;
+                if (background)
                     all[i] = all[i + 1] = all[i + 2] = all[i + 3] = 0;
             }
 

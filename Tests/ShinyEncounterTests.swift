@@ -50,6 +50,14 @@ struct ShinyEncounterTests {
         check(!ShinyEncounters.resolve(pane: "persistent", pokemon: "pikachu", defaults: defaults, roll: { 0 }),
               "Choosing a species must preserve its normal appearance")
 
+        func silhouette(_ image: CGImage) -> [UInt8] {
+            let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                    bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let pixels = context.data!.assumingMemoryBound(to: UInt8.self)
+            return (0..<image.width * image.height).map { pixels[$0 * 4 + 3] }
+        }
         var paletteChecks = 0
         for name in roster {
             guard let normal = SpriteSheet.named(name), let shiny = SpriteSheet.named(name, shiny: true) else {
@@ -60,6 +68,7 @@ struct ShinyEncounterTests {
                   "Shinies must retain identical placement and visible bounds: \(name)")
             for (left, right) in zip(normal.frames, shiny.frames) {
                 check(left.width == right.width && left.height == right.height, "Frame dimensions must match: \(name)")
+                check(silhouette(left) == silhouette(right), "A shiny colour matching the background must remain opaque: \(name)")
             }
             paletteChecks += 2
         }

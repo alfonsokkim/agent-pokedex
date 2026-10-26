@@ -31,6 +31,9 @@ Check(!EncounterRules.Resolve(saved, "virizion", true, () => 1).Shiny, "Release 
 Check(!EncounterRules.Resolve(saved, "gengar", roll: () => 1).Shiny, "Species changes cannot reuse an appearance");
 var palette = SpritePalette.Parse("JASC-PAL\r\n0100\r\n1\r\n12 234 56\r\n");
 Check(palette[0] == new Rgb(12, 234, 56), "Palette channels");
+Check(SpriteIndices.At(new byte[] { 0x01, 0x20 }, 2, 4, 2, 0) == 2, "Packed palette indices are decoded without colour matching");
+Check(SpriteIndices.At(new byte[] { 0x40 }, 1, 2, 0, 0) == 1, "Two-bit palette index");
+Check(SpriteIndices.At(new byte[] { 0, 15 }, 2, 8, 1, 0) == 15, "Eight-bit palette index");
 foreach (string invalid in new[] { "1 2 3 junk", "1 2 256", "1 2", "-1 2 3" })
     Reject(() => SpritePalette.Parse("JASC-PAL\n0100\n1\n" + invalid), "Malformed palette accepted");
 foreach (bool left in new[] { false, true })

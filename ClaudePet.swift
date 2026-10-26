@@ -203,13 +203,23 @@ struct SpriteSheet {
         context.draw(colored, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
 
         let background = palette.map { (r: $0[0], g: $0[1], b: $0[2]) } ?? backgroundColor(in: data)
-        if let key = background,
-           let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
-            for i in stride(from: 0, to: image.width * image.height * 4, by: 4)
-            where abs(Int(pixels[i]) - Int(key.r)) < 3
-                && abs(Int(pixels[i + 1]) - Int(key.g)) < 3
-                && abs(Int(pixels[i + 2]) - Int(key.b)) < 3 {
-                pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 0
+        let bits = image.bitsPerPixel
+        let indexedData = image.colorSpace?.model == .indexed && [1, 2, 4, 8].contains(bits)
+            ? image.dataProvider?.data : nil
+        let indices = indexedData.flatMap { CFDataGetLength($0) >= image.bytesPerRow * image.height ? CFDataGetBytePtr($0) : nil }
+        if let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
+            for pixel in 0..<image.width * image.height {
+                let i = pixel * 4
+                let clear: Bool
+                if let indices {
+                    let x = pixel % image.width, y = pixel / image.width
+                    let index = (Int(indices[y * image.bytesPerRow + x * bits / 8]) >> (8 - bits - x * bits % 8)) & ((1 << bits) - 1)
+                    clear = index == 0
+                } else if let key = background {
+                    clear = abs(Int(pixels[i]) - Int(key.r)) < 3 && abs(Int(pixels[i + 1]) - Int(key.g)) < 3
+                        && abs(Int(pixels[i + 2]) - Int(key.b)) < 3
+                } else { clear = false }
+                if clear { pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 0 }
             }
         }
 

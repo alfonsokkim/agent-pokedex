@@ -48,6 +48,12 @@ static class EncounterRules
 
 readonly record struct Rgb(byte R, byte G, byte B);
 
+static class SpriteIndices
+{
+    public static int At(byte[] pixels, int stride, int bits, int x, int y) =>
+        (pixels[y * stride + x * bits / 8] >> (8 - bits - x * bits % 8)) & ((1 << bits) - 1);
+}
+
 static class SpritePalette
 {
     public static Rgb[] Parse(string text)
