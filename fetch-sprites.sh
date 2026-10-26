@@ -8,6 +8,7 @@ dir="$HOME/.local/share/claude-pet/sprites"
 catalog="$HOME/.local/share/claude-pet/pokemon.json"
 base=https://raw.githubusercontent.com/rh-hideout/pokeemerald-expansion/master/graphics/pokemon
 mkdir -p "$dir"
+mkdir -p "$dir/palettes"
 
 catalog_tmp=$(mktemp)
 names_tmp=$(mktemp)
@@ -29,12 +30,18 @@ for pokemon in response.results.prefix(649) { print(pokemon.name) }
 
 while IFS= read -r name; do
   asset=${name//-/_}
-  [[ -s "$dir/$asset.png" ]] && continue
-  printf '%s\n%s\n' "$base/$asset/overworld.png" "$dir/$asset.png" >> "$jobs_tmp"
+  if [[ ! -s "$dir/$asset.png" ]]; then
+    printf '%s\n%s\n' "$base/$asset/overworld.png" "$dir/$asset.png" >> "$jobs_tmp"
+  fi
+  for variant in normal shiny; do
+    if [[ ! -s "$dir/palettes/${asset}_${variant}.pal" ]]; then
+      printf '%s\n%s\n' "$base/$asset/overworld_${variant}.pal" "$dir/palettes/${asset}_${variant}.pal" >> "$jobs_tmp"
+    fi
+  done
 done < "$names_tmp"
 
 if [[ -s "$jobs_tmp" ]]; then
-  echo "Downloading $(($(wc -l < "$jobs_tmp") / 2)) Pokémon sprite sheets..."
+  echo "Downloading $(($(wc -l < "$jobs_tmp") / 2)) Pokémon sheets and palettes..."
   xargs -P 12 -n 2 /bin/sh -c '
     url=$1
     output=$2
@@ -60,6 +67,12 @@ while IFS= read -r name; do
     echo "missing: $name" >&2
     ((missing += 1))
   fi
+  for variant in normal shiny; do
+    if [[ ! -s "$dir/palettes/${asset}_${variant}.pal" ]]; then
+      echo "missing: $name $variant palette" >&2
+      ((missing += 1))
+    fi
+  done
 done < "$names_tmp"
 [[ "$missing" -eq 0 ]] || { echo "$missing Pokémon sprites could not be downloaded." >&2; exit 1; }
-echo "649 Gen I to V sprite sheets ready in $dir"
+echo "649 Gen I to V sprite sheets with normal and shiny palettes ready in $dir"

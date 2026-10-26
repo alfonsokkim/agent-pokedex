@@ -7,5 +7,6 @@ app="$HOME/Applications/Claude Pet.app"
 mkdir -p "$app/Contents/MacOS"
 swiftc -O -parse-as-library -swift-version 5 "$here/ClaudePet.swift" -o "$app/Contents/MacOS/ClaudePet"
 cp "$here/Info.plist" "$app/Contents/Info.plist"
-codesign --force --sign - "$app" >/dev/null
+codesign --force --sign - \
+  --requirements '=designated => identifier "com.alfonsokim.claude-pet"' "$app" >/dev/null
 echo "built $app"

@@ -80,6 +80,45 @@ enum PokemonCatalog {
 
 let roster = PokemonCatalog.species.map(\.assetName)
 
+enum SpritePalette {
+    static func colors(in path: String) -> [UInt8]? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let lines = text.split(whereSeparator: \.isNewline)
+        guard lines.count >= 3, lines[0] == "JASC-PAL", lines[1] == "0100",
+              let count = Int(lines[2]), (1...256).contains(count), lines.count == count + 3 else { return nil }
+        var colors: [UInt8] = []
+        for line in lines.dropFirst(3) {
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            let channels = fields.compactMap { UInt8($0) }
+            guard fields.count == 3, channels.count == 3 else { return nil }
+            colors.append(contentsOf: channels)
+        }
+        return colors
+    }
+}
+
+/// One roll per appearance, saved so app restarts do not reroll a visible pet.
+enum ShinyEncounters {
+    static let denominator = 25
+    static let key = "pokemonAppearances.v1"
+
+    static func resolve(pane: String, pokemon: String, reroll: Bool = false,
+                        defaults: UserDefaults = .standard,
+                        roll: () -> Int = { Int.random(in: 0..<denominator) }) -> Bool {
+        if !reroll, let saved = defaults.dictionary(forKey: key)?[pane] as? [String: Any],
+           saved["pokemon"] as? String == pokemon, let shiny = saved["shiny"] as? Bool { return shiny }
+        let shiny = roll() == 0
+        save(shiny, pane: pane, pokemon: pokemon, defaults: defaults)
+        return shiny
+    }
+
+    static func save(_ shiny: Bool, pane: String, pokemon: String, defaults: UserDefaults = .standard) {
+        var saved = defaults.dictionary(forKey: key) ?? [:]
+        saved[pane] = ["pokemon": pokemon, "shiny": shiny]
+        defaults.set(saved, forKey: key)
+    }
+}
+
 /// A follower sheet: square frames for down ×2, up ×2, left ×2, and
 /// optionally right ×2 (otherwise left is mirrored).
 struct SpriteSheet {
@@ -95,9 +134,12 @@ struct SpriteSheet {
     static let directory = NSHomeDirectory() + "/.local/share/claude-pet/sprites"
     static var cache: [String: SpriteSheet] = [:]
 
-    static func named(_ name: String) -> SpriteSheet? {
-        if let cached = cache[name] { return cached }
-        guard let frames = frames(in: "\(directory)/\(name).png"), frames.count >= 6 else { return nil }
+    static func named(_ name: String, shiny: Bool = false) -> SpriteSheet? {
+        let key = name + (shiny ? ":shiny" : ":normal")
+        if let cached = cache[key] { return cached }
+        let palettePath = "\(directory)/palettes/\(name)_\(shiny ? "shiny" : "normal").pal"
+        guard let palette = SpritePalette.colors(in: palettePath),
+              let frames = frames(in: "\(directory)/\(name).png", palette: palette), frames.count >= 6 else { return nil }
         let boxes = frames.map(visibleBox)
         let extents = zip(frames, boxes).map { frame, box -> (top: Int, halfWidth: Int) in
             let half = frame.width / 2
@@ -105,7 +147,7 @@ struct SpriteSheet {
         }
         let sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
                                 halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
-        cache[name] = sheet
+        cache[key] = sheet
         return sheet
     }
 
@@ -133,7 +175,7 @@ struct SpriteSheet {
     }
 
     /// Decodes a row of square frames and makes the background (palette entry 0) transparent.
-    static func frames(in path: String) -> [CGImage]? {
+    static func frames(in path: String, palette: [UInt8]? = nil) -> [CGImage]? {
         let url = URL(fileURLWithPath: path)
         guard let data = try? Data(contentsOf: url),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -143,9 +185,25 @@ struct SpriteSheet {
                                       bitsPerComponent: 8, bytesPerRow: image.width * 4, space: space,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let colored: CGImage
+        if let palette {
+            guard (3...768).contains(palette.count), palette.count.isMultiple(of: 3),
+                  image.colorSpace?.model == .indexed,
+                  let indexed = CGColorSpace(indexedBaseSpace: space, last: palette.count / 3 - 1, colorTable: palette),
+                  let provider = image.dataProvider,
+                  let replacement = CGImage(width: image.width, height: image.height,
+                                            bitsPerComponent: image.bitsPerComponent, bitsPerPixel: image.bitsPerPixel,
+                                            bytesPerRow: image.bytesPerRow, space: indexed, bitmapInfo: image.bitmapInfo,
+                                            provider: provider, decode: nil, shouldInterpolate: false,
+                                            intent: .defaultIntent) else { return nil }
+            colored = replacement
+        } else {
+            colored = image
+        }
+        context.draw(colored, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
 
-        if let key = backgroundColor(in: data),
+        let background = palette.map { (r: $0[0], g: $0[1], b: $0[2]) } ?? backgroundColor(in: data)
+        if let key = background,
            let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
             for i in stride(from: 0, to: image.width * image.height * 4, by: 4)
             where abs(Int(pixels[i]) - Int(key.r)) < 3
@@ -378,9 +436,10 @@ enum ClaudeApp {
 
     static var installed: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
 
-    /// Asks once for the permission to read the Claude app, if it's installed.
+    /// Asks once for permission when an installed app needs accessibility-based navigation.
     static func askForAccessIfNeeded() {
-        guard installed, !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "askedAccessibility") else { return }
+        guard (installed || Conductor.installed), !AXIsProcessTrusted(),
+              !UserDefaults.standard.bool(forKey: "askedAccessibility") else { return }
         UserDefaults.standard.set(true, forKey: "askedAccessibility")
         askForAccess()
     }
@@ -549,6 +608,7 @@ enum ClaudeApp {
 enum Conductor {
     static let bundleID = "com.conductor.app"
     static let prefix = "conductor:"
+    static var installed: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
     static let database = NSHomeDirectory() + "/Library/Application Support/com.conductor.app/conductor.db"
 
     struct Chat {
@@ -572,12 +632,16 @@ enum Conductor {
         // Closed, nothing's running, whatever it last wrote.
         let open = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
         let hooks = Dictionary(records.map { ($0.session, $0) }, uniquingKeysWith: { a, _ in a })
+        let waitingCodex = open ? CodexSessions.waitingForInput(Set(chats.compactMap {
+            $0.agentType.lowercased().contains("codex") && !$0.claudeSession.isEmpty ? $0.claudeSession : nil
+        })) : []
         return chats.map { chat in
             let hook = hooks[chat.claudeSession]
             let waiting = !((chat.live["activeQuestions"] as? [Any]) ?? []).isEmpty
                 || !(chat.live["activeUserInteraction"] is NSNull || chat.live["activeUserInteraction"] == nil)
                 || !(chat.live["proposedPlan"] is NSNull || chat.live["proposedPlan"] == nil)
                 || hook?.status == "blocked"
+                || waitingCodex.contains(chat.claudeSession)
             let status: String
             if !open { status = chat.unread > 0 ? "done" : "idle" }
             else if waiting || chat.status == "error" || chat.status.hasPrefix("needs") {
@@ -649,22 +713,35 @@ enum Conductor {
         return chats
     }
 
-    /// Brings Conductor forward on the chat's workspace, by clicking its link
-    /// in the sidebar (which needs the Accessibility permission). Without it,
-    /// or with the sidebar closed, Conductor just comes forward.
+    /// Brings Conductor forward and presses the exact workspace link for this chat.
+    /// Retrying briefly also covers launching Conductor from a closed state.
     static func open(_ chat: String) {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map {
-                NSWorkspace.shared.openApplication(at: $0, configuration: NSWorkspace.OpenConfiguration())
+        guard let workspace = chats()?.first(where: { $0.id == chat })?.workspace else { return }
+        func navigate(_ app: NSRunningApplication) {
+            app.activate()
+            guard AXIsProcessTrusted() else {
+                ClaudeApp.askForAccess()
+                return
             }
-            return
+            DispatchQueue.global().async {
+                let root = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetMessagingTimeout(root, 1)
+                for attempt in 0..<8 {
+                    if let link = workspaceLink(workspace, in: root) {
+                        AXUIElementPerformAction(link, kAXPressAction as CFString)
+                        return
+                    }
+                    if attempt < 7 { Thread.sleep(forTimeInterval: 0.15) }
+                }
+            }
         }
-        app.activate()
-        guard AXIsProcessTrusted() else { return }
-        DispatchQueue.global().async {
-            if let workspace = chats()?.first(where: { $0.id == chat })?.workspace,
-               let link = workspaceLink(workspace, in: AXUIElementCreateApplication(app.processIdentifier)) {
-                AXUIElementPerformAction(link, kAXPressAction as CFString)
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            navigate(app)
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
+                if let app { navigate(app) }
             }
         }
     }
@@ -675,9 +752,9 @@ enum Conductor {
         var value: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success,
            value as? String == "AXLink",
-           AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &value) == .success,
-           (value as? URL)?.path.hasSuffix("/workspace/" + workspace) == true {
-            return element
+           AXUIElementCopyAttributeValue(element, "AXURL" as CFString, &value) == .success {
+            let address = (value as? URL)?.absoluteString ?? value as? String ?? ""
+            if URL(string: address)?.path.hasSuffix("/workspace/" + workspace) == true { return element }
         }
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,
               let children = value as? [AXUIElement] else { return nil }
@@ -886,6 +963,99 @@ enum HookSessions {
     }
 }
 
+/// Tracks actual question calls, not ordinary background work or tool execution.
+enum CodexActivity {
+    struct State {
+        var phase = "idle"
+        var context: Double?
+        // True means asynchronous: its "accepted" output is not the user's answer.
+        var questions: [String: Bool] = [:]
+        var status: String { questions.isEmpty ? phase : "blocked" }
+
+        mutating func consume(_ line: Data) {
+            guard let json = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                  let type = json["type"] as? String,
+                  let payload = json["payload"] as? [String: Any],
+                  let item = payload["type"] as? String else { return }
+            if type == "event_msg" {
+                switch item {
+                case "task_started", "turn_started": phase = "working"
+                case "task_complete", "turn_complete":
+                    phase = "done"
+                    questions = questions.filter { $0.value }
+                case "turn_aborted":
+                    phase = "idle"
+                    questions.removeAll()
+                case "user_message": questions.removeAll()
+                case "token_count":
+                    if let info = payload["info"] as? [String: Any],
+                       let usage = info["last_token_usage"] as? [String: Any],
+                       let tokens = usage["total_tokens"] as? NSNumber,
+                       let window = info["model_context_window"] as? NSNumber, window.doubleValue > 0 {
+                        context = tokens.doubleValue / window.doubleValue
+                    }
+                default: break
+                }
+            } else if type == "response_item" {
+                if item == "message", payload["role"] as? String == "user" {
+                    questions.removeAll()
+                } else if item == "function_call" || item == "custom_tool_call" {
+                    let name = ((payload["name"] as? String) ?? "").split(separator: ".").last.map(String.init) ?? ""
+                    if ["request_user_input", "request_user_input_async"].contains(name),
+                       let id = payload["call_id"] as? String {
+                        questions[id] = name == "request_user_input_async"
+                    }
+                } else if item == "function_call_output" || item == "custom_tool_call_output",
+                          let id = payload["call_id"] as? String, let asynchronous = questions[id] {
+                    let output = (payload["output"] as? String).flatMap { $0.data(using: .utf8) }
+                        .flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+                    if !asynchronous || output?["accepted"] as? Bool != true {
+                        questions.removeValue(forKey: id)
+                    }
+                }
+            }
+        }
+    }
+
+    private struct Cached {
+        var inode: UInt64
+        var offset: UInt64 = 0
+        var partial = Data()
+        var state = State()
+    }
+    private static var cache: [String: Cached] = [:]
+
+    /// Read each log once, then only appended bytes. A pending async question
+    /// must not disappear just because tool output pushed it out of a short tail.
+    static func read(_ path: String) -> State? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value,
+              let handle = FileHandle(forReadingAtPath: path) else {
+            cache.removeValue(forKey: path)
+            return nil
+        }
+        defer { try? handle.close() }
+        var entry = cache[path] ?? Cached(inode: inode)
+        if entry.inode != inode || size < entry.offset { entry = Cached(inode: inode) }
+        do {
+            try handle.seek(toOffset: entry.offset)
+            while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+                entry.offset += UInt64(chunk.count)
+                entry.partial.append(chunk)
+                var start = entry.partial.startIndex
+                while let newline = entry.partial[start...].firstIndex(of: 10) {
+                    entry.state.consume(Data(entry.partial[start..<newline]))
+                    start = entry.partial.index(after: newline)
+                }
+                entry.partial = Data(entry.partial[start...])
+            }
+        } catch { return nil }
+        cache[path] = entry
+        return entry.state
+    }
+}
+
 // MARK: - Codex sessions
 
 /// Live Codex CLI, ChatGPT desktop, Conductor, and Orca chats. Codex holds one
@@ -988,41 +1158,39 @@ enum CodexSessions {
     /// The last turn boundary in a rollout tells us whether Codex is working,
     /// waiting for input, or finished. The most recent token event supplies CTX.
     static func state(of thread: Thread) -> (status: String, context: Double?) {
-        guard let handle = FileHandle(forReadingAtPath: thread.rollout) else { return ("idle", nil) }
-        defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 524_288 ? size - 524_288 : 0)
-        var status = "idle"
-        var context: Double?
-        for line in String(decoding: handle.readDataToEndOfFile(), as: UTF8.self).split(separator: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = json["type"] as? String,
-                  let payload = json["payload"] as? [String: Any] else { continue }
-            if type == "event_msg", let event = payload["type"] as? String {
-                switch event {
-                case "task_started": status = "working"
-                case "task_complete": status = "done"
-                case "turn_aborted": status = "idle"
-                case "token_count":
-                    if let info = payload["info"] as? [String: Any],
-                       let usage = info["last_token_usage"] as? [String: Any],
-                       let tokens = usage["total_tokens"] as? NSNumber,
-                       let window = info["model_context_window"] as? NSNumber, window.doubleValue > 0 {
-                        context = tokens.doubleValue / window.doubleValue
-                    }
-                default: break
-                }
-            } else if type == "response_item", payload["type"] as? String == "custom_tool_call" {
-                let name = (payload["name"] as? String) ?? ""
-                if name.contains("request_user_input") { status = "blocked" }
-            } else if type == "response_item", payload["type"] as? String == "custom_tool_call_output",
-                      status == "blocked" {
-                status = "working"
+        guard let activity = CodexActivity.read(thread.rollout) else { return ("idle", nil) }
+        var status = activity.status
+        if status == "done", modifiedAt(thread.rollout) <= seenAt(thread.id) { status = "idle" }
+        return (status, activity.context)
+    }
+
+    /// Conductor owns these pets, but its persisted live state can omit Codex
+    /// questions. Resolve their rollouts without requiring a separate CLI pet.
+    static func waitingForInput(_ ids: Set<String>, in sources: [Store] = stores()) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        var waiting = Set<String>()
+        for store in sources {
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(store.database, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+                sqlite3_close(db)
+                continue
+            }
+            defer { sqlite3_close(db) }
+            sqlite3_busy_timeout(db, 200)
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT rollout_path FROM threads WHERE id = ? AND archived = 0",
+                                    -1, &statement, nil) == SQLITE_OK else { continue }
+            defer { sqlite3_finalize(statement) }
+            for id in ids {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, id, -1, SQLITE_TRANSIENT)
+                guard sqlite3_step(statement) == SQLITE_ROW,
+                      let text = sqlite3_column_text(statement, 0) else { continue }
+                if CodexActivity.read(String(cString: text))?.status == "blocked" { waiting.insert(id) }
             }
         }
-        if status == "done", modifiedAt(thread.rollout) <= seenAt(thread.id) { status = "idle" }
-        return (status, context)
+        return waiting
     }
 
     static func agents(excluding excluded: Set<String>) -> [Agent] {
@@ -1082,7 +1250,12 @@ enum CodexSessions {
     }
 
     static func open(_ agent: Agent) {
-        markSeen(String(agent.pane.dropFirst(prefix.count)))
+        let id = String(agent.pane.dropFirst(prefix.count))
+        markSeen(id)
+        if agent.app == "com.openai.codex", let url = URL(string: "codex://threads/\(id)") {
+            NSWorkspace.shared.open(url)
+            return
+        }
         let app = agent.app.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
             ?? agent.pid.flatMap(hostApp(of:))
         app?.activate()
@@ -1163,7 +1336,7 @@ final class PetView: NSView {
     // Layout, top-down (the view is flipped): room for jumps and drifting z's,
     // the sprite, then room for the dots or the caption (its status, or "is
     // done") under it. The sprite is centred across the window.
-    static let spriteTop: CGFloat = 40
+    static let spriteTop: CGFloat = 48
     /// How far it paces either side while working. Less in a row, where
     /// neighbours stand close enough that they'd walk into each other.
     var pace = PetView.columnPace
@@ -1187,6 +1360,7 @@ final class PetView: NSView {
 
     private(set) var agent: Agent
     private(set) var pokemon: String
+    private(set) var isShiny = false
     private var sheet: SpriteSheet
 
     var onMoved: ((PetView) -> Void)?
@@ -1242,6 +1416,7 @@ final class PetView: NSView {
             if Self.recordsActivity { LastActive.set(agent.pane, lastBusy) }
         }
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height(for: sheet)))
+        if Self.recordsActivity { updateAppearance() }
     }
 
     /// Records activity, saving it at most once a minute.
@@ -1261,8 +1436,22 @@ final class PetView: NSView {
 
     func setPokemon(_ name: String, sheet: SpriteSheet) {
         pokemon = name
+        isShiny = false
+        if Self.recordsActivity { ShinyEncounters.save(false, pane: agent.pane, pokemon: name) }
         self.sheet = sheet
         fitSize()
+    }
+
+    private func updateAppearance(reroll: Bool = false) {
+        let shiny = ShinyEncounters.resolve(pane: agent.pane, pokemon: pokemon, reroll: reroll)
+        if let selected = SpriteSheet.named(pokemon, shiny: shiny) {
+            sheet = selected
+            isShiny = shiny
+        } else if let normal = SpriteSheet.named(pokemon) {
+            sheet = normal
+            isShiny = false
+        }
+        needsDisplay = true
     }
 
     /// Matches the view's height to its sprite at the current size.
@@ -1316,6 +1505,7 @@ final class PetView: NSView {
         if next == .stored && mood != .stored {
             transition = Transition(kind: .recall, start: tick)
         } else if mood == .stored && next != .stored {
+            if Self.recordsActivity { updateAppearance(reroll: true) }
             // Called back mid-recall, it just comes straight back out.
             transition = wasGone ? nil : Transition(kind: .release, start: tick)
             arriving = wasGone
@@ -1519,7 +1709,12 @@ final class PetView: NSView {
         let width = size.width + 12 + badgeRoom
         let x = min(max(homeX + spriteSize / 2 - width / 2, room.minX), room.maxX - width)
         let height = size.height + 4
-        let y = captionAbove && headTop != nil ? max(0, headTop! - height - 5) : ground + 2
+        var topAnchor = headTop
+        if captionAbove, let remaining = contextLeft, hovering || remaining <= 0.2, let headTop {
+            let px = max(1, (Self.scale * 4 / 3).rounded() / 2)
+            topAnchor = headTop - 3 - 7 * px
+        }
+        let y = captionAbove && topAnchor != nil ? max(0, topAnchor! - height - 5) : ground + 2
         let pill = NSRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
         NSColor(white: 0.1, alpha: 0.85).setFill()
         NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
@@ -1880,8 +2075,8 @@ final class PetView: NSView {
         }
         lineUp.submenu = arrange
         menu.addItem(lineUp)
-        if ClaudeApp.installed && !AXIsProcessTrusted() {
-            let allow = NSMenuItem(title: "Show Claude App Chats…", action: #selector(allowClaudeApp), keyEquivalent: "")
+        if (ClaudeApp.installed || Conductor.installed) && !AXIsProcessTrusted() {
+            let allow = NSMenuItem(title: "Enable Chat Switching…", action: #selector(allowClaudeApp), keyEquivalent: "")
             allow.target = self
             menu.addItem(allow)
         }
@@ -2181,8 +2376,8 @@ extension NSScreen {
 /// `pets` order: top to bottom in a column, left to right in a row.
 ///
 /// In a column each pet's ground sits its caption room plus the gap above the
-/// head of the one below, and the gap shrinks if they won't fit. In a row they
-/// share one ground line.
+/// head of the one below, and every pet shares a centre line regardless of its
+/// canvas size. The gap shrinks if they won't fit. In a row they share one ground line.
 func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangement) -> [NSPoint] {
     guard !pets.isEmpty else { return [] }
     let onLeft = arrangement.onLeft
@@ -2214,9 +2409,11 @@ func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangemen
     let room = visible.height - stackBase - stackTop - heights.reduce(0, +) - CGFloat(pets.count) * PetView.captionDepth
     // Too tall for the screen even with no gap: they close up and overlap a little rather than run off it.
     let gap = pets.count > 1 ? min(stackGap, room / CGFloat(pets.count - 1)) : 0
-    let x = { (pet: PetView) in
-        panelX(pet, spriteLeft: onLeft ? visible.minX + stackMargin : visible.maxX - stackMargin - pet.spriteSize)
-    }
+    // Reserve the widest visible footprint, including pacing, so larger sheets
+    // share the same centre as smaller ones without spilling over the screen edge.
+    let halfWidth = pets.map(\.footprintWidth).max()! / 2
+    let centerX = onLeft ? visible.minX + stackMargin + halfWidth : visible.maxX - stackMargin - halfWidth
+    let x = { (pet: PetView) in panelX(pet, spriteLeft: centerX - pet.spriteSize / 2) }
 
     var origins: [NSPoint] = []
     if arrangement.atTop {
@@ -3068,6 +3265,7 @@ func renderSheet(to path: String) {
         view.hovering = hover
         view.transition = transition.map { Transition(kind: $0.0, start: tick - $0.1) }
         view.contextLeft = context
+        view.captionAbove = hover && context != nil
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
         view.cacheDisplay(in: view.bounds, to: rep)
         rep.draw(in: NSRect(x: CGFloat(i) * cell.width, y: size.height - cell.height,
@@ -3233,6 +3431,7 @@ enum Context {
     }
 }
 
+#if !TESTING
 @main
 struct ClaudePet {
     @MainActor static func main() {
@@ -3249,11 +3448,16 @@ struct ClaudePet {
             return
         }
         if args.contains("--validate-sprites") {
-            let missing = roster.filter { SpriteSheet.named($0) == nil }
+            let missing = roster.flatMap { name in
+                [false, true].compactMap { shiny in
+                    SpriteSheet.named(name, shiny: shiny) == nil ? name + (shiny ? " (shiny)" : " (normal)") : nil
+                }
+            }
             if missing.isEmpty {
-                print("Validated \(roster.count) Pokémon sprite sheets.")
+                print("Validated \(roster.count * 2) normal and shiny Pokémon sprite sheets.")
             } else {
                 print("Missing or invalid sprites:", missing.joined(separator: ", "))
+                exit(1)
             }
             return
         }
@@ -3293,3 +3497,4 @@ struct ClaudePet {
         app.run()
     }
 }
+#endif

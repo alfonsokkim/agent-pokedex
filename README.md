@@ -18,6 +18,11 @@ working, which one is waiting on you, and which one just finished.
 Each session gets its own Pokemon and keeps it. All 649 Pokemon from Generations
 I through V are available in the Kanto, Johto, Hoenn, Sinnoh, and Unova pickers.
 
+On Mac, each new pet and each release from a Poke Ball has a 1-in-25 chance to be
+shiny. It keeps those colours until recalled, including across app restarts.
+The picker uses normal colours; choosing a different Pokemon starts it in its
+normal form. Waking a sleeping pet or showing hidden pets does not reroll it.
+
 ## Download
 
 | | |
@@ -233,7 +238,8 @@ The Pokemon are Gen 3-style walking sprites from the
 project, and the Poke Ball is FireRed's item ball from
 [pret/pokefirered](https://github.com/pret/pokefirered). They're Nintendo and
 Game Freak's art, so they aren't included in this repo: the installers
-download them, for personal use.
+download them, for personal use. The Mac app uses the project's separate normal
+and shiny overworld palettes, sharing the same walking frames for both variants.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a
 trademark of Anthropic. This is a fan project, not affiliated with or endorsed
