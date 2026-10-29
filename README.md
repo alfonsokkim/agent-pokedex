@@ -87,14 +87,10 @@ There are **1,298 normal and shiny appearances**, built from 649 walking sheets
 and two palettes per species. Normal Virizion is green. Larger sprites keep
 their proportions, and mixed-size pets share a centre line in vertical layouts.
 
-<details>
-<summary>See the Generation V / Unova picker contents</summary>
+The current **Generation I / Kanto** picker, showing all 151 Pokémon. The in-app
+submenu scrolls; this full-grid render shows the complete list in one image.
 
-The in-app submenu scrolls. This render shows all 156 Unova Pokémon in its grid.
-
-![All 156 Generation V Pokémon in the Unova picker grid](docs/picker.png)
-
-</details>
+![All 151 Generation I Pokémon in the current Kanto picker](docs/picker.png)
 
 ## Install on Mac
 
