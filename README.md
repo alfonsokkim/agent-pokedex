@@ -1,4 +1,4 @@
-# Claude and Codex Agent Pokédex
+# Agent Pokédex
 
 A pixel Pokemon for every Claude or Codex session you have running on a Mac or Windows.
 They float at the edge of your screen
@@ -29,8 +29,8 @@ shoot outward, twinkle, and fade once per hover, without changing its colours.
 
 | | |
 | --- | --- |
-| **Mac** (macOS 14 or later) | [claude-agent-pokedex-mac.zip](https://github.com/alfonsokkim/claude-agent-pokedex/releases/latest/download/claude-agent-pokedex-mac.zip) |
-| **Windows** (Windows 10 or 11, 64-bit) | [claude-agent-pokedex-windows.zip](https://github.com/alfonsokkim/claude-agent-pokedex/releases/latest/download/claude-agent-pokedex-windows.zip) |
+| **Mac** (macOS 14 or later) | [claude-agent-pokedex-mac.zip](https://github.com/alfonsokkim/agent-pokedex/releases/latest/download/claude-agent-pokedex-mac.zip) |
+| **Windows** (Windows 10 or 11, 64-bit) | [claude-agent-pokedex-windows.zip](https://github.com/alfonsokkim/agent-pokedex/releases/latest/download/claude-agent-pokedex-windows.zip) |
 
 The Mac app supports [Claude Code](https://claude.com/claude-code), the Codex
 CLI, Codex in the ChatGPT app, Conductor, and Orca. Windows supports Claude Code,
@@ -65,8 +65,8 @@ zsh install.sh
 Or with git:
 
 ```bash
-git clone https://github.com/alfonsokkim/claude-agent-pokedex.git
-cd claude-agent-pokedex
+git clone https://github.com/alfonsokkim/agent-pokedex.git
+cd agent-pokedex
 ./install.sh
 ```
 
