@@ -1,4 +1,4 @@
-# Claude and Codex Agent Pokédex
+# Agent Pokédex
 
 Desktop Pokémon companions for Claude and Codex chats. Each session keeps its
 own Pokémon, which paces while its agent works, flashes red when it needs you,
@@ -34,17 +34,17 @@ Closed historical chats and remote chats are not automatically included.
 
 ### Windows preview
 
-The [`windows-parity` branch](https://github.com/alfonsokkim/claude-agent-pokedex/tree/windows-parity)
+The [`windows-parity` branch](https://github.com/alfonsokkim/agent-pokedex/tree/windows-parity)
 adds native Windows Codex discovery, all 649 species, generation pickers, normal
 and shiny palettes, provider badges, improved alignment, staggered completion
 captions, and turning animations for object-like Pokémon. It also adds a
 GBA-style burst of gold stars when hovering over a shiny on Mac and Windows.
 
 The branch has passed portable behaviour checks, native Windows checks, and Mac
-regression checks in [GitHub Actions](https://github.com/alfonsokkim/claude-agent-pokedex/actions/runs/40381154169).
+regression checks in [GitHub Actions](https://github.com/alfonsokkim/agent-pokedex/actions/runs/40381154169).
 Live Windows desktop appearance, mixed-DPI displays, and app navigation still
 need a hands-on smoke test. See the
-[Windows verification notes](https://github.com/alfonsokkim/claude-agent-pokedex/blob/windows-parity/windows/README.md).
+[Windows verification notes](https://github.com/alfonsokkim/agent-pokedex/blob/windows-parity/windows/README.md).
 This preview has not been merged into `main` or published as a release.
 
 ## What the pets show
@@ -103,8 +103,8 @@ xcode-select --install
 **Install from git to get the features documented above:**
 
 ```bash
-git clone https://github.com/alfonsokkim/claude-agent-pokedex.git
-cd claude-agent-pokedex
+git clone https://github.com/alfonsokkim/agent-pokedex.git
+cd agent-pokedex
 ./install.sh
 ```
 
@@ -124,8 +124,8 @@ Codex integration, 649-species collection, or shiny encounters.
 
 | Platform | Published download |
 | --- | --- |
-| Mac, macOS 14 or later | [claude-agent-pokedex-mac.zip (v1.7.0)](https://github.com/alfonsokkim/claude-agent-pokedex/releases/download/v1.7.0/claude-agent-pokedex-mac.zip) |
-| Windows 10 or 11, 64-bit | [claude-agent-pokedex-windows.zip (v1.7.0)](https://github.com/alfonsokkim/claude-agent-pokedex/releases/download/v1.7.0/claude-agent-pokedex-windows.zip) |
+| Mac, macOS 14 or later | [claude-agent-pokedex-mac.zip (v1.7.0)](https://github.com/alfonsokkim/agent-pokedex/releases/download/v1.7.0/claude-agent-pokedex-mac.zip) |
+| Windows 10 or 11, 64-bit | [claude-agent-pokedex-windows.zip (v1.7.0)](https://github.com/alfonsokkim/agent-pokedex/releases/download/v1.7.0/claude-agent-pokedex-windows.zip) |
 
 For the Mac zip, unzip it, open its folder in Terminal, and run `zsh install.sh`.
 
@@ -141,19 +141,19 @@ installs `/pet`, and starts the pets. Nothing else needs installing for the
 packaged app. This published version has not had a hands-on Windows smoke test.
 
 For the expanded Windows preview, use the source on
-[`windows-parity`](https://github.com/alfonsokkim/claude-agent-pokedex/tree/windows-parity).
+[`windows-parity`](https://github.com/alfonsokkim/agent-pokedex/tree/windows-parity).
 With git and the .NET 8 SDK installed on Windows:
 
 ```powershell
-git clone --branch windows-parity https://github.com/alfonsokkim/claude-agent-pokedex.git
-cd claude-agent-pokedex
+git clone --branch windows-parity https://github.com/alfonsokkim/agent-pokedex.git
+cd agent-pokedex
 dotnet publish windows/ClaudePet.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 & .\publish\ClaudePet.exe --install
 ```
 
 Its CI workflow also packages a Windows zip as the `windows` artifact on
 successful runs. For test coverage, see
-[`windows/README.md`](https://github.com/alfonsokkim/claude-agent-pokedex/blob/windows-parity/windows/README.md).
+[`windows/README.md`](https://github.com/alfonsokkim/agent-pokedex/blob/windows-parity/windows/README.md).
 
 To start at login, press Win+R, enter `shell:startup`, and add a shortcut to
 `%LOCALAPPDATA%\ClaudePet\ClaudePet.exe`.
