@@ -1279,6 +1279,31 @@ enum CodexSessions {
 /// `stored` is back in its Poké Ball: 12 hours unused, or recalled from the menu.
 enum Mood { case idle, working, alert, done, sleeping, stored }
 
+/// A manual recall consumes the current completion, but never a future one.
+struct RecallState {
+    private(set) var isRecalled = false
+    private(set) var completionAcknowledged = false
+
+    mutating func recall(status: String) {
+        isRecalled = true
+        completionAcknowledged = status != "working"
+    }
+
+    mutating func observe(previous: String?, current: String) {
+        let newWork = current == "working" && previous != "working"
+        let finishedWork = previous == "working" && current != "working"
+        let newCompletion = current == "done" && previous != "done"
+        if newWork || finishedWork || newCompletion || current == "blocked" {
+            isRecalled = false
+            completionAcknowledged = false
+        }
+        if current == "working" { completionAcknowledged = false }
+    }
+
+    mutating func wake() { isRecalled = false }
+    mutating func acknowledgeCompletion() { completionAcknowledged = true }
+}
+
 /// Going into the Poké Ball (a red glow, shrinking away to nothing) or coming
 /// out of it (a white flash).
 struct Transition {
@@ -1456,6 +1481,7 @@ final class PetView: NSView {
     var lastBusy: Date
     var previousStatus: String?
     var finishedAt: Date?
+    private var recallState = RecallState()
     var contextLeft: Double?
     var transition: Transition?
     /// While its Poké Ball is in the air there's nothing to draw here yet.
@@ -1482,7 +1508,7 @@ final class PetView: NSView {
 
     /// Records activity, saving it at most once a minute.
     func markActive(_ now: Date = Date()) {
-        if now.timeIntervalSince(lastBusy) > 60 { LastActive.set(agent.pane, now) }
+        if Self.recordsActivity && now.timeIntervalSince(lastBusy) > 60 { LastActive.set(agent.pane, now) }
         lastBusy = now
     }
 
@@ -1531,9 +1557,12 @@ final class PetView: NSView {
 
     func update(_ latest: Agent) {
         let now = Date()
-        if previousStatus == "working" && latest.status != "working" {
+        recallState.observe(previous: previousStatus, current: latest.status)
+        if latest.status == "working" {
+            finishedAt = nil
+        } else if previousStatus == "working" {
             finishedAt = now
-        } else if latest.status == "done" && finishedAt == nil {
+        } else if latest.status == "done" && finishedAt == nil && !recallState.completionAcknowledged {
             finishedAt = now
         }
         previousStatus = latest.status
@@ -1541,21 +1570,25 @@ final class PetView: NSView {
         contextLeft = latest.contextLeft
 
         let next: Mood
-        switch latest.status {
-        case "blocked": next = .alert
-        case "working": next = .working
-        default:
-            // herdr's done lasts until the agent is viewed; a plain stop counts briefly.
-            let quiet = now.timeIntervalSince(lastBusy)
-            if let at = finishedAt,
-               now.timeIntervalSince(at) < (latest.status == "done" ? 900 : 15) {
-                next = .done
-            } else if quiet > 12 * 3600 {
-                next = .stored
-            } else if quiet > 600 {
-                next = .sleeping
-            } else {
-                next = .idle
+        if recallState.isRecalled {
+            next = .stored
+        } else {
+            switch latest.status {
+            case "blocked": next = .alert
+            case "working": next = .working
+            default:
+                // herdr's done lasts until the agent is viewed; a plain stop counts briefly.
+                let quiet = now.timeIntervalSince(lastBusy)
+                if !recallState.completionAcknowledged, let at = finishedAt,
+                   now.timeIntervalSince(at) < (latest.status == "done" ? 900 : 15) {
+                    next = .done
+                } else if quiet > 12 * 3600 {
+                    next = .stored
+                } else if quiet > 600 {
+                    next = .sleeping
+                } else {
+                    next = .idle
+                }
             }
         }
         if next == .working || next == .alert { markActive(now) }
@@ -1602,19 +1635,21 @@ final class PetView: NSView {
     /// its widest plus its pacing room.
     var footprintWidth: CGFloat { CGFloat(2 * sheet.halfWidth) * Self.scale + 2 * pace }
 
-    /// Recalls the pet into its Poké Ball until you let it out or its agent gets busy.
+    /// Dismisses an existing completion, or waits in the ball for ongoing work to finish.
     @objc func returnToBall() {
+        recallState.recall(status: agent.status)
         lastBusy = .distantPast
-        LastActive.set(agent.pane, .distantPast)
+        if Self.recordsActivity { LastActive.set(agent.pane, .distantPast) }
         finishedAt = nil
         setMood(.stored)
     }
 
     /// Brings the pet out of its ball, or wakes it from a nap.
     @objc func wake() {
+        recallState.wake()
         let now = Date()
         lastBusy = now
-        LastActive.set(agent.pane, now)
+        if Self.recordsActivity { LastActive.set(agent.pane, now) }
         if mood == .stored || mood == .sleeping {
             setMood(.idle)
             if !arriving { hopUntil = now.addingTimeInterval(1.4) } // a happy hop once it's out
@@ -2078,6 +2113,7 @@ final class PetView: NSView {
 
     /// Lets the pet out (or wakes it), then jumps to its agent.
     func clicked() {
+        recallState.acknowledgeCompletion()
         finishedAt = nil
         hopUntil = Date().addingTimeInterval(0.6)
         wake()
@@ -2104,8 +2140,8 @@ final class PetView: NSView {
 
         let ball = NSMenuItem(title: "Return to Poké Ball", action: #selector(returnToBall), keyEquivalent: "")
         ball.target = self
-        // A busy agent would pop it straight back out.
-        ball.isEnabled = mood != .working && mood != .alert
+        // Working pets stay recalled until they finish or need attention.
+        ball.isEnabled = mood != .alert
         menu.addItem(ball)
         // Let Out ▸ each pet resting out of sight.
         let resting = restingPets?() ?? []
@@ -3064,7 +3100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
     }
 
-    /// Not busy and not waiting on you, as Return to Poké Ball allows.
+    /// Pets eligible for the bulk Return Idle Pets action.
     func isIdle(_ pet: PetView) -> Bool {
         !pet.isGone && pet.transition == nil && pet.mood != .working && pet.mood != .alert
     }

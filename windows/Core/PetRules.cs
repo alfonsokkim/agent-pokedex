@@ -38,6 +38,35 @@ static class PokemonCatalog
 
 sealed record Appearance(string Pokemon, bool Shiny);
 
+/// A manual recall consumes the current completion, but never a future one.
+sealed class RecallState
+{
+    public bool IsRecalled { get; private set; }
+    public bool CompletionAcknowledged { get; private set; }
+
+    public void Recall(string status)
+    {
+        IsRecalled = true;
+        CompletionAcknowledged = status != "working";
+    }
+
+    public void Observe(string? previous, string current)
+    {
+        bool newWork = current == "working" && previous != "working";
+        bool finishedWork = previous == "working" && current != "working";
+        bool newCompletion = current == "done" && previous != "done";
+        if (newWork || finishedWork || newCompletion || current == "blocked")
+        {
+            IsRecalled = false;
+            CompletionAcknowledged = false;
+        }
+        if (current == "working") CompletionAcknowledged = false;
+    }
+
+    public void Wake() => IsRecalled = false;
+    public void AcknowledgeCompletion() => CompletionAcknowledged = true;
+}
+
 static class EncounterRules
 {
     public const int Denominator = 25;

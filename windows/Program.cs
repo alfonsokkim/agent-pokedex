@@ -1148,6 +1148,7 @@ sealed class PetView : FrameworkElement
     double hopUntil, labelUntil, lastBusy;
     string? previousStatus;
     double? finishedAt;
+    readonly RecallState recallState = new();
     Transition? transition;
     /// While its Poke Ball is in the air there's nothing to draw here yet.
     bool arriving;
@@ -1251,19 +1252,22 @@ sealed class PetView : FrameworkElement
     public void Update(Agent latest)
     {
         double now = Util.Now();
-        if (previousStatus == "working" && latest.Status != "working") finishedAt = now;
-        else if (latest.Status == "done" && finishedAt == null) finishedAt = now;
+        recallState.Observe(previousStatus, latest.Status);
+        if (latest.Status == "working") finishedAt = null;
+        else if (previousStatus == "working") finishedAt = now;
+        else if (latest.Status == "done" && finishedAt == null && !recallState.CompletionAcknowledged) finishedAt = now;
         previousStatus = latest.Status;
         Agent = latest;
 
         Mood next;
-        if (latest.Status == "blocked") next = Mood.Alert;
+        if (recallState.IsRecalled) next = Mood.Stored;
+        else if (latest.Status == "blocked") next = Mood.Alert;
         else if (latest.Status == "working") next = Mood.Working;
         else
         {
             // herdr's done lasts until the agent is viewed; a plain stop counts briefly.
             double quiet = now - lastBusy;
-            if (finishedAt is double at && now - at < (latest.Status == "done" ? 900 : 15)) next = Mood.Done;
+            if (!recallState.CompletionAcknowledged && finishedAt is double at && now - at < (latest.Status == "done" ? 900 : 15)) next = Mood.Done;
             else if (quiet > 12 * 3600) next = Mood.Stored;
             else if (quiet > 600) next = Mood.Sleeping;
             else next = Mood.Idle;
@@ -1316,9 +1320,10 @@ sealed class PetView : FrameworkElement
         InvalidateVisual();
     }
 
-    /// Recalls the pet into its Poke Ball until you let it out or its agent gets busy.
+    /// Dismisses an existing completion, or waits in the ball for ongoing work to finish.
     public void ReturnToBall()
     {
+        recallState.Recall(Agent.Status);
         lastBusy = 0;
         LastActive.Set(Agent.Pane, 0);
         finishedAt = null;
@@ -1328,6 +1333,7 @@ sealed class PetView : FrameworkElement
     /// Brings the pet out of its ball, or wakes it from a nap.
     public void Wake()
     {
+        recallState.Wake();
         double now = Util.Now();
         lastBusy = now;
         LastActive.Set(Agent.Pane, now);
@@ -1341,6 +1347,7 @@ sealed class PetView : FrameworkElement
     /// Lets the pet out (or wakes it), then jumps to its agent.
     public void Clicked()
     {
+        recallState.AcknowledgeCompletion();
         finishedAt = null;
         hopUntil = Util.Now() + 0.6;
         Wake();
@@ -1767,7 +1774,7 @@ sealed class PetView : FrameworkElement
         menu.Items.Add(new Separator());
         menu.Items.Add(Item("Go to Agent", Clicked));
         var ball = Item("Return to Poke Ball", ReturnToBall);
-        ball.IsEnabled = mood != Mood.Working && mood != Mood.Alert; // a busy agent would pop it straight back out
+        ball.IsEnabled = mood != Mood.Alert; // working pets wait in the ball until completion or attention
         menu.Items.Add(ball);
         // Let Out: each pet resting out of sight.
         var resting = RestingPets?.Invoke() ?? new List<PetView>();

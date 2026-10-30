@@ -66,6 +66,32 @@ foreach (bool left in new[] { false, true })
 Check(PetRules.Label("project", "root", "chat") == "[project] [root]: chat", "Project and workspace naming");
 Check(PetRules.SpinningPokemon.Contains("klinklang") && !PetRules.SpinningPokemon.Contains("groudon"), "Object animation classification");
 
+var recall = new RecallState();
+recall.Observe(null, "done");
+recall.Recall("done");
+for (int i = 0; i < 12; i++) recall.Observe("done", "done");
+Check(recall.IsRecalled && recall.CompletionAcknowledged, "A ready recall consumes the current completion across repeated polls");
+recall.Observe("done", "idle");
+Check(recall.IsRecalled && recall.CompletionAcknowledged, "An idle poll cannot undo a ready recall");
+recall.Wake();
+Check(!recall.IsRecalled && recall.CompletionAcknowledged, "Let Out cannot rearm a consumed completion");
+recall.Observe("idle", "working");
+Check(!recall.IsRecalled && !recall.CompletionAcknowledged, "New work rearms the next completion");
+recall.Recall("working");
+for (int i = 0; i < 12; i++) recall.Observe("working", "working");
+Check(recall.IsRecalled && !recall.CompletionAcknowledged, "A recalled worker remains hidden without acknowledging future completion");
+recall.Observe("working", "done");
+Check(!recall.IsRecalled && !recall.CompletionAcknowledged, "Completing recalled work must notify");
+recall.Recall("working");
+recall.Observe("working", "idle");
+Check(!recall.IsRecalled && !recall.CompletionAcknowledged, "An idle completion must also notify");
+recall.Recall("working");
+recall.Observe("working", "blocked");
+Check(!recall.IsRecalled, "A hidden worker must come out when it needs attention");
+recall.AcknowledgeCompletion();
+recall.Observe("blocked", "working");
+Check(!recall.CompletionAcknowledged, "Resuming work cannot keep an old acknowledgement");
+
 var activity = new CodexActivity();
 activity.Consume(Boundary("task_started"));
 activity.Consume(Call("sync", "functions.request_user_input"));

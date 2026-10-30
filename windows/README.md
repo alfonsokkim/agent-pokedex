@@ -12,7 +12,7 @@ dotnet run --project windows/Tests/Core/ClaudePet.CoreTests.csproj -c Release
 
 Pass an existing sprite directory as the final argument after `--` to validate
 all 1,298 upstream palettes too. These tests cover the real production catalog,
-encounters, palette parser, column positioning, labels, Codex log tracking,
+encounters, recall acknowledgement, palette parser, column positioning, labels, Codex log tracking,
 read-only thread discovery, and asset downloads.
 
 On Windows, run the native checks:
@@ -39,6 +39,9 @@ the app on a Windows desktop.
 - Check all five generation menus and confirm normal Virizion is green.
 - Recall and release pets. Each release rolls 1 in 25; hiding, sleeping, and
   restarting preserve an existing appearance. Picking a species starts normal.
+- Recall a ready pet: its current completion is dismissed and it stays hidden.
+  Recall a working pet: it stays hidden during work and returns on completion or
+  when it needs attention. Letting out an acknowledged pet cannot replay its message.
 - Hover over a shiny. Gold pixel stars should burst outward and fade without
   looping while the pointer stays still. Moving off and back replays the burst.
 - Check mixed-size Pokemon in every column corner, then a horizontal row with

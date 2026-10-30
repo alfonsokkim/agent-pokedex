@@ -61,7 +61,7 @@ jobs:
       - name: Sprite and behaviour regression tests
         run: |
           zsh fetch-sprites.sh
-          for test in LayoutTests ShinyEncounterTests ShinyHoverTests AttentionTests; do
+          for test in LayoutTests ShinyEncounterTests ShinyHoverTests AttentionTests RecallTests; do
             swiftc -O -parse-as-library -swift-version 5 -DTESTING -DPOKEMON ClaudePet.swift "Tests/$test.swift" -o "$RUNNER_TEMP/$test"
             "$RUNNER_TEMP/$test"
           done

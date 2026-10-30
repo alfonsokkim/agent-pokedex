@@ -56,6 +56,49 @@ static class WindowsTests
                 }
             }
             Look.BaseScale = PetSize.Medium;
+            foreach (var kind in new[] { AgentKind.Claude, AgentKind.Codex })
+            {
+                var recallAgent = new Agent("test:recall:" + kind, "done", "", "test") { Kind = kind };
+                var recalled = new PetView(recallAgent, "gengar", SpriteSheet.Named("gengar")!);
+                recalled.Update(recallAgent);
+                Check(recalled.CurrentMood == Mood.Done, "Unacknowledged completion is visible");
+                recalled.ReturnToBall();
+                for (int i = 0; i < 12; i++)
+                {
+                    recalled.Update(recallAgent);
+                    recalled.Animate();
+                }
+                Check(recalled.IsGone, "Ready recall survives repeated done polls and finishes its animation");
+                recalled.Wake();
+                recalled.Land();
+                recalled.Update(recallAgent);
+                Check(recalled.CurrentMood == Mood.Idle, "Let Out does not replay a consumed completion");
+                recallAgent = recallAgent with { Status = "working" };
+                recalled.Update(recallAgent);
+                recalled.ReturnToBall();
+                for (int i = 0; i < 12; i++)
+                {
+                    recalled.Update(recallAgent);
+                    recalled.Animate();
+                }
+                Check(recalled.IsGone, "Busy recall stays hidden through working polls");
+                int summons = 0;
+                recalled.OnSummon = _ => summons++;
+                recalled.Update(recallAgent with { Status = "done" });
+                Check(recalled.CurrentMood == Mood.Done && summons == 1, "Hidden work completing summons its pet");
+                recalled.Land();
+                recalled.ReturnToBall();
+                for (int i = 0; i < 8; i++) recalled.Animate();
+                recalled.Update(recallAgent with { Status = "done" });
+                Check(recalled.IsGone, "A new completion can also be consumed by recall");
+
+                var attentionPet = new PetView(recallAgent, "gengar", SpriteSheet.Named("gengar")!);
+                attentionPet.Update(recallAgent);
+                attentionPet.ReturnToBall();
+                for (int i = 0; i < 8; i++) attentionPet.Animate();
+                attentionPet.Update(recallAgent with { Status = "blocked" });
+                Check(attentionPet.CurrentMood == Mood.Alert, "Hidden work needing attention comes back out");
+            }
             var agent = new Agent("test:attention", "blocked", "a chat", "project") { Kind = AgentKind.Codex, ContextUsed = 0.9 };
             var gengar = new PetView(agent, "gengar", SpriteSheet.Named("gengar")!);
             gengar.Update(agent);

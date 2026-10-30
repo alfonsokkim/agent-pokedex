@@ -124,8 +124,10 @@ Codex chats are found automatically through their local thread state.
   - **Pokemon**: open a generation and region submenu, then pick from its sprite
     grid. The ones other sessions have are greyed out, and picking one swaps
     the two.
-  - **Return to Poke Ball**: put a pet away by hand. It's out of sight until
-    its session gets busy, then its ball is thrown back in.
+  - **Return to Poke Ball**: put a pet away by hand and dismiss its current
+    "is done" message. If it is still working, it stays in the ball until that
+    work finishes or needs attention, then comes back out. A pet returned after
+    completion stays away until you let it out or its session starts new work.
   - **Let Out**: call back any pet that's away.
   - **Line Up Pets**: a column or a row, in any corner of the display that pet
     is on. Pets are
