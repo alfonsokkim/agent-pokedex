@@ -358,6 +358,9 @@ struct Agent {
     var pid: pid_t? = nil
     /// How much of its context window remains, 0 to 1, when known.
     var contextLeft: Double? = nil
+    /// Last real conversation activity, so an expired pet can return even after a fast reply.
+    var activityAt: Double? = nil
+    var activityRevision: String? = nil
 
     var label: String {
         guard !workspace.isEmpty else { return title.isEmpty ? project : "\(project): \(title)" }
@@ -569,7 +572,8 @@ enum ClaudeApp {
             running = []
             latest = latest.map {
                 Agent(pane: $0.pane, status: $0.status == "done" ? "done" : "idle",
-                      title: $0.title, project: $0.project, workspace: $0.workspace, kind: $0.kind)
+                      title: $0.title, project: $0.project, workspace: $0.workspace, kind: $0.kind,
+                      activityAt: $0.activityAt)
             }
             return latest
         }
@@ -595,7 +599,7 @@ enum ClaudeApp {
             guard let last = ran[chat.title], now - last < 86_400 else { continue }
             agents.append(Agent(pane: prefix + chat.title,
                                 status: status == "idle" && finished.contains(chat.title) ? "done" : status,
-                                title: "", project: chat.title))
+                                title: "", project: chat.title, activityAt: last))
         }
         let kept = ran.filter { now - $0.value < 86_400 }
         if kept != lastRan { lastRan = kept }
@@ -636,6 +640,7 @@ enum Conductor {
         let workspaceName: String
         let projectName: String
         let projectWorkspaceCount: Int
+        let activityAt: Double?
     }
 
     /// nil when Conductor isn't installed, or its database can't be read.
@@ -667,7 +672,7 @@ enum Conductor {
                               project: chat.projectName,
                               workspace: singleWorkspace ? "" : chat.workspaceName,
                               kind: chat.agentType.lowercased().contains("codex") ? .codex : .claude,
-                              app: bundleID)
+                              app: bundleID, activityAt: chat.activityAt)
             agent.contextLeft = chat.contextPercent.map { max(0, min(1, 1 - $0 / 100)) }
                 ?? Context.remaining(transcript: hook?.transcript, model: hook?.model)
             return agent
@@ -693,7 +698,8 @@ enum Conductor {
                    (SELECT COUNT(*) FROM workspaces sibling
                     WHERE sibling.repository_id = w.repository_id
                       AND COALESCE(sibling.state, '') != 'archived'
-                      AND COALESCE(sibling.DEPRECATED_archived, 0) = 0)
+                      AND COALESCE(sibling.DEPRECATED_archived, 0) = 0),
+                   (julianday(s.last_user_message_at) - 2440587.5) * 86400.0
             FROM sessions s
             JOIN workspaces w ON w.local_id = s.workspace_id
             LEFT JOIN repos r ON r.id = w.repository_id
@@ -720,7 +726,9 @@ enum Conductor {
                               contextPercent: sqlite3_column_type(statement, 6) == SQLITE_NULL
                                   ? nil : sqlite3_column_double(statement, 6),
                               title: text(7), workspace: text(8), workspaceName: text(9), projectName: text(10),
-                              projectWorkspaceCount: Int(sqlite3_column_int(statement, 11))))
+                              projectWorkspaceCount: Int(sqlite3_column_int(statement, 11)),
+                              activityAt: sqlite3_column_type(statement, 12) == SQLITE_NULL
+                                  ? nil : sqlite3_column_double(statement, 12)))
         }
         return chats
     }
@@ -805,7 +813,8 @@ enum Herdr {
                 status: entry["agent_status"] as? String ?? "unknown",
                 title: entry["terminal_title_stripped"] as? String ?? "",
                 project: (cwd as NSString).lastPathComponent,
-                kind: ((entry["agent_type"] as? String) ?? "").lowercased().contains("codex") ? .codex : .claude
+                kind: ((entry["agent_type"] as? String) ?? "").lowercased().contains("codex") ? .codex : .claude,
+                activityRevision: (entry["state_change_seq"] as? NSNumber)?.stringValue
             )
         }
     }
@@ -945,7 +954,8 @@ enum HookSessions {
     static func agents(from records: [Record], herdrRunning: Bool) -> [Agent] {
         records.filter { !($0.herdrPane != nil && herdrRunning) }.sorted { $0.started < $1.started }.map {
             Agent(pane: prefix + $0.session, status: $0.status, title: "",
-                  project: ($0.cwd as NSString).lastPathComponent, app: $0.app, pid: $0.pid)
+                  project: ($0.cwd as NSString).lastPathComponent, app: $0.app, pid: $0.pid,
+                  activityAt: $0.updated)
         }
     }
 
@@ -980,6 +990,7 @@ enum CodexActivity {
     struct State {
         var phase = "idle"
         var context: Double?
+        var activityAt: Double?
         // True means asynchronous: its "accepted" output is not the user's answer.
         var questions: [String: Bool] = [:]
         var status: String { questions.isEmpty ? phase : "blocked" }
@@ -989,6 +1000,12 @@ enum CodexActivity {
                   let type = json["type"] as? String,
                   let payload = json["payload"] as? [String: Any],
                   let item = payload["type"] as? String else { return }
+            if (type == "event_msg" && ["task_started", "turn_started", "task_complete", "turn_complete", "user_message"].contains(item))
+                || (type == "response_item" && item == "message" && payload["role"] as? String == "user") {
+                if let timestamp = json["timestamp"] as? String, let date = activityDate(timestamp) {
+                    activityAt = max(activityAt ?? 0, date)
+                }
+            }
             if type == "event_msg" {
                 switch item {
                 case "task_started", "turn_started": phase = "working"
@@ -1027,6 +1044,14 @@ enum CodexActivity {
                 }
             }
         }
+    }
+
+    private static func activityDate(_ timestamp: String) -> Double? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: timestamp) { return date.timeIntervalSince1970 }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: timestamp)?.timeIntervalSince1970
     }
 
     private struct Cached {
@@ -1213,7 +1238,8 @@ enum CodexSessions {
             return Agent(pane: prefix + thread.id, status: state.status, title: thread.title,
                          project: scope.project, workspace: scope.workspace, kind: .codex,
                          app: app, pid: thread.pid,
-                         contextLeft: state.context.map { max(0, min(1, 1 - $0)) })
+                         contextLeft: state.context.map { max(0, min(1, 1 - $0)) },
+                         activityAt: CodexActivity.read(thread.rollout)?.activityAt)
         }
     }
 
@@ -1325,6 +1351,48 @@ enum LastActive {
         var all = UserDefaults.standard.dictionary(forKey: key) ?? [:]
         all[pane] = date.timeIntervalSince1970
         UserDefaults.standard.set(all, forKey: key)
+    }
+}
+
+/// Only expiry markers survive cleanup, so stale provider snapshots cannot recreate old pets.
+struct StoredPetHistory: Codable, Equatable {
+    static let key = "storedPetHistory.v1"
+    static let lifetime: Double = 14 * 24 * 3600
+    var storedSince: [String: Double] = [:]
+    var storedRevisions: [String: String] = [:]
+    var expiredAt: [String: Double] = [:]
+    var expiredRevisions: [String: String] = [:]
+
+    mutating func admits(pane: String, status: String, activityAt: Double?, revision: String? = nil) -> Bool {
+        guard let cutoff = expiredAt[pane] else { return true }
+        let newRevision = revision != nil && expiredRevisions[pane] != nil && revision != expiredRevisions[pane]
+        guard status == "working" || status == "blocked" || (activityAt ?? 0) > cutoff || newRevision else { return false }
+        expiredAt[pane] = nil
+        expiredRevisions[pane] = nil
+        return true
+    }
+
+    mutating func observe(pane: String, stored: Bool, since: Double, revision: String? = nil) {
+        if stored {
+            if storedSince[pane] == nil {
+                storedSince[pane] = since
+                storedRevisions[pane] = revision
+            }
+        } else {
+            storedSince[pane] = nil
+            storedRevisions[pane] = nil
+        }
+    }
+
+    mutating func expire(now: Double, revisions: [String: String] = [:]) -> Set<String> {
+        let expired = Set(storedSince.filter { now - $0.value >= Self.lifetime }.keys)
+        for pane in expired {
+            expiredAt[pane] = storedSince[pane]! + Self.lifetime
+            expiredRevisions[pane] = storedRevisions[pane] ?? revisions[pane]
+            storedSince[pane] = nil
+            storedRevisions[pane] = nil
+        }
+        return expired
     }
 }
 
@@ -1654,6 +1722,13 @@ final class PetView: NSView {
             setMood(.idle)
             if !arriving { hopUntil = now.addingTimeInterval(1.4) } // a happy hop once it's out
         }
+    }
+
+    func resumeForActivity() {
+        recallState = RecallState()
+        finishedAt = nil
+        previousStatus = nil
+        wake()
     }
 
     var summary: String { agent.label }
@@ -2733,8 +2808,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Panels already on screen, which slide to new spots instead of jumping.
     var placed: Set<ObjectIdentifier> = []
     var polling = false
-    let defaults = UserDefaults.standard
+    let defaults: UserDefaults
+    let createsPanels: Bool
+    var storedHistory: StoredPetHistory
     var statusItem: NSStatusItem?
+
+    init(defaults: UserDefaults = .standard, createsPanels: Bool = true) {
+        self.defaults = defaults
+        self.createsPanels = createsPanels
+        storedHistory = defaults.data(forKey: StoredPetHistory.key)
+            .flatMap { try? JSONDecoder().decode(StoredPetHistory.self, from: $0) } ?? StoredPetHistory()
+        super.init()
+    }
 
     /// Which Pokémon each herdr pane gets, kept across restarts.
     var assignments: [String: String] {
@@ -2783,24 +2868,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Adds a pet for each new agent and removes pets whose agents have gone.
-    func sync(_ agents: [Agent]) {
+    func sync(_ discovered: [Agent], now: Date = Date()) {
+        let timestamp = now.timeIntervalSince1970
+        let before = storedHistory
+        // Activity before the deadline ended that storage period, even if the app was closed.
+        for agent in discovered {
+            if let since = storedHistory.storedSince[agent.pane], let activity = agent.activityAt,
+               activity > since, activity < since + StoredPetHistory.lifetime {
+                storedHistory.observe(pane: agent.pane, stored: false, since: timestamp)
+            }
+        }
+        let revisions = Dictionary(discovered.compactMap { agent in
+            agent.activityRevision.map { (agent.pane, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         var changed = false
+        for pane in storedHistory.expire(now: timestamp, revisions: revisions) {
+            forgetPet(pane)
+            changed = true
+        }
+        let agents = discovered.filter {
+            storedHistory.admits(pane: $0.pane, status: $0.status, activityAt: $0.activityAt, revision: $0.activityRevision)
+        }
         if agents.map(\.pane) != order {
             order = agents.map(\.pane)
             changed = true
         }
         let live = Set(order)
         for pane in pets.keys where !live.contains(pane) {
-            if let panel = panels[pane] {
-                panel.orderOut(nil)
-                placed.remove(ObjectIdentifier(panel))
-            }
-            panels[pane] = nil
-            pets[pane] = nil
+            removePet(pane)
             changed = true
         }
         for agent in agents {
             if let pet = pets[agent.pane] {
+                let newActivity = (agent.activityAt ?? 0) > (pet.agent.activityAt ?? 0)
+                let newRevision = agent.activityRevision != nil && pet.agent.activityRevision != nil
+                    && agent.activityRevision != pet.agent.activityRevision
+                if (newActivity || newRevision) && pet.mood == .stored {
+                    pet.resumeForActivity()
+                }
                 pet.update(agent)
                 continue
             }
@@ -2828,11 +2933,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Set(self?.pets.values.filter { $0 !== pet }.map(\.pokemon) ?? [])
             }
             pet.update(agent)
+            if let since = storedHistory.storedSince[agent.pane],
+               agent.status != "working", agent.status != "blocked", (agent.activityAt ?? 0) <= since,
+               agent.activityRevision == nil || agent.activityRevision == storedHistory.storedRevisions[agent.pane] {
+                pet.returnToBall()
+                pet.transition = nil
+            }
             pets[agent.pane] = pet
-            panels[agent.pane] = makePanel(for: pet)
+            if createsPanels { panels[agent.pane] = makePanel(for: pet) }
             changed = true
         }
+        for pane in assignments.keys {
+            let pet = pets[pane]
+            let busy = pet?.agent.status == "working" || pet?.agent.status == "blocked"
+            // Existing manual recalls used distantPast, which is not a real storage date.
+            // Start their first retention period now; automatic storage can use last activity.
+            let lastBusy = pet?.lastBusy.timeIntervalSince1970
+                ?? LastActive.get(pane)?.timeIntervalSince1970 ?? 0
+            let since = lastBusy > 0 ? min(timestamp, lastBusy + 12 * 3600) : timestamp
+            storedHistory.observe(pane: pane, stored: !busy && (pet == nil || pet?.mood == .stored),
+                                  since: since, revision: pet?.agent.activityRevision)
+        }
+        for pane in storedHistory.expire(now: timestamp, revisions: revisions) {
+            forgetPet(pane)
+            changed = true
+        }
+        order.removeAll { storedHistory.expiredAt[$0] != nil }
+        if storedHistory != before, let data = try? JSONEncoder().encode(storedHistory) {
+            defaults.set(data, forKey: StoredPetHistory.key)
+        }
         if changed { layout() }
+    }
+
+    private func removePet(_ pane: String) {
+        if let panel = panels[pane] {
+            panel.orderOut(nil)
+            placed.remove(ObjectIdentifier(panel))
+        }
+        panels[pane] = nil
+        pets[pane] = nil
+    }
+
+    private func forgetPet(_ pane: String) {
+        let pokemon = assignments[pane]
+        removePet(pane)
+        assignments[pane] = nil
+        for key in [LastActive.key, ShinyEncounters.key] {
+            var records = defaults.dictionary(forKey: key) ?? [:]
+            records[pane] = nil
+            defaults.set(records, forKey: key)
+        }
+        if pane.hasPrefix(CodexSessions.prefix) {
+            var seen = defaults.dictionary(forKey: "codexSeen") ?? [:]
+            seen[String(pane.dropFirst(CodexSessions.prefix.count))] = nil
+            defaults.set(seen, forKey: "codexSeen")
+        }
+        if let pokemon, !assignments.values.contains(pokemon) { positions[pokemon] = nil }
     }
 
     /// The pane's Pokémon from last time, or a random one no live pet is using.

@@ -67,6 +67,37 @@ Check(PetRules.Label("project", "root", "chat") == "[project] [root]: chat", "Pr
 Check(PetRules.SpinningPokemon.Contains("klinklang") && !PetRules.SpinningPokemon.Contains("groudon"), "Object animation classification");
 
 var recall = new RecallState();
+var history = new StoredPetHistory();
+double storedStart = 1000, expiry = storedStart + StoredPetHistory.Lifetime;
+history.Observe("old", true, storedStart);
+history.Observe("old", true, storedStart + 100);
+Check(history.StoredSince["old"] == storedStart, "Polling cannot reset the storage clock");
+Check(history.Expire(expiry - 0.001).Count == 0, "Keep pets for the full two weeks");
+Check(history.Expire(expiry).SetEquals(new[] { "old" }), "Expire at the two-week boundary");
+Check(!history.Admits("old", "done", storedStart), "An old completion cannot recreate an expired pet");
+history = JsonSerializer.Deserialize<StoredPetHistory>(JsonSerializer.Serialize(history))!;
+Check(!history.Admits("old", "idle", storedStart), "Expiry survives restarts");
+Check(history.Admits("old", "done", expiry + 1), "A fast new reply permits a fresh encounter");
+history.Observe("awake", true, storedStart);
+history.Observe("awake", false, storedStart + 1);
+Check(history.Expire(expiry).Count == 0, "Letting a pet out cancels its old storage clock");
+history.Observe("worker", true, storedStart);
+history.Expire(expiry);
+Check(history.Admits("worker", "working", null), "New work can restore an expired pet without timestamps");
+history.Observe("herdr", true, storedStart);
+history.Expire(expiry, new Dictionary<string, string> { ["herdr"] = "42" });
+Check(!history.Admits("herdr", "done", null, "42"), "A stale herdr state stays expired");
+Check(history.Admits("herdr", "done", null, "44"), "Fast herdr work returns via its state sequence");
+history.Observe("offline", true, storedStart);
+history.Expire(expiry + 1000);
+Check(history.Admits("offline", "done", expiry + 1), "Late cleanup uses the actual expiry deadline, allowing new activity while closed");
+var timestamped = new CodexActivity();
+timestamped.Consume(JsonSerializer.Serialize(new { timestamp = "2026-11-02T10:20:30.125Z", type = "event_msg", payload = new { type = "user_message" } }));
+Check(timestamped.ActivityAt != null, "Codex user messages record real activity");
+double? lastActivity = timestamped.ActivityAt;
+timestamped.Consume(JsonSerializer.Serialize(new { timestamp = "2026-11-02T11:20:30Z", type = "event_msg", payload = new { type = "token_count" } }));
+Check(timestamped.ActivityAt == lastActivity, "Metadata refreshes cannot resurrect an expired pet");
+
 recall.Observe(null, "done");
 recall.Recall("done");
 for (int i = 0; i < 12; i++) recall.Observe("done", "done");

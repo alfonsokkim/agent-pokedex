@@ -14,6 +14,8 @@ Pass an existing sprite directory as the final argument after `--` to validate
 all 1,298 upstream palettes too. These tests cover the real production catalog,
 encounters, recall acknowledgement, palette parser, column positioning, labels, Codex log tracking,
 read-only thread discovery, and asset downloads.
+Stored-pet retention checks cover the two-week boundary, persisted expiry,
+metadata cleanup, stale status suppression, and new activity creating a fresh pet.
 
 On Windows, run the native checks:
 

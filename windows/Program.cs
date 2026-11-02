@@ -182,6 +182,11 @@ static class Prefs
         lock (gate) { Root.Remove(section); Save(); }
     }
 
+    public static string[] Keys(string section)
+    {
+        lock (gate) return Section(section).Select(pair => pair.Key).ToArray();
+    }
+
     static void Save() => Json.WriteAtomic(Paths.Prefs, Root.ToJsonString(Json.Pretty));
 }
 
@@ -373,6 +378,8 @@ sealed record Agent(string Pane, string Status, string Title, string Project, in
     public string Label => PetRules.Label(Project, Workspace, Title);
     /// How full its context window is, 0 to 1, when known.
     public double? ContextUsed { get; init; }
+    public double? ActivityAt { get; init; }
+    public string? ActivityRevision { get; init; }
 }
 
 static class Agents
@@ -708,7 +715,8 @@ static class ClaudeApp
             else if (running.Remove(chat.Title)) finished.Add(chat.Title);
             if (viewing == chat.Title) finished.Remove(chat.Title);
             if (now - Json.Num(ran[chat.Title]) >= 86_400) continue;
-            agents.Add(new Agent(Prefix + chat.Title, status == "idle" && finished.Contains(chat.Title) ? "done" : status, "", chat.Title));
+            agents.Add(new Agent(Prefix + chat.Title, status == "idle" && finished.Contains(chat.Title) ? "done" : status, "", chat.Title)
+                { ActivityAt = Json.Num(ran[chat.Title]) });
         }
         foreach (var old in ran.Where(r => now - Json.Num(r.Value) >= 86_400).Select(r => r.Key).ToList()) ran.Remove(old);
         try { Json.WriteAtomic(RanFile, ran.ToJsonString()); } catch { }
@@ -775,7 +783,8 @@ static class Herdr
                     Json.Str(a["agent_status"]) ?? "unknown",
                     Json.Str(a["terminal_title_stripped"]) ?? "",
                     Util.ProjectName(Json.Str(a["foreground_cwd"]) ?? Json.Str(a["cwd"]) ?? ""))
-                    { Kind = (Json.Str(a["agent_type"]) ?? "").Contains("codex", StringComparison.OrdinalIgnoreCase) ? AgentKind.Codex : AgentKind.Claude })
+                    { Kind = (Json.Str(a["agent_type"]) ?? "").Contains("codex", StringComparison.OrdinalIgnoreCase) ? AgentKind.Codex : AgentKind.Claude,
+                        ActivityRevision = a["state_change_seq"]?.ToJsonString() })
                 .ToList();
         }
         catch
@@ -899,7 +908,8 @@ static class HookSessions
         {
             int pid = (int)Json.Num(record["pid"]);
             return new Agent(Prefix + Json.Str(record["session"]), Json.Str(record["status"]) ?? "idle", "",
-                Util.ProjectName(Json.Str(record["cwd"]) ?? ""), pid > 0 ? pid : null);
+                Util.ProjectName(Json.Str(record["cwd"]) ?? ""), pid > 0 ? pid : null)
+                { ActivityAt = Json.Num(record["updated"]) };
         })
         .ToList();
 
@@ -1148,7 +1158,7 @@ sealed class PetView : FrameworkElement
     double hopUntil, labelUntil, lastBusy;
     string? previousStatus;
     double? finishedAt;
-    readonly RecallState recallState = new();
+    RecallState recallState = new();
     Transition? transition;
     /// While its Poke Ball is in the air there's nothing to draw here yet.
     bool arriving;
@@ -1159,6 +1169,7 @@ sealed class PetView : FrameworkElement
     /// Resting out of sight, once it has gone into its ball.
     public bool IsGone => mood == Mood.Stored && transition == null;
     internal Mood CurrentMood => mood;
+    internal double LastBusy => lastBusy;
 
     public PetView(Agent agent, string pokemon, SpriteSheet sheet)
     {
@@ -1330,6 +1341,12 @@ sealed class PetView : FrameworkElement
         SetMood(Mood.Stored);
     }
 
+    internal void RestoreStorage()
+    {
+        ReturnToBall();
+        transition = null;
+    }
+
     /// Brings the pet out of its ball, or wakes it from a nap.
     public void Wake()
     {
@@ -1342,6 +1359,14 @@ sealed class PetView : FrameworkElement
             SetMood(Mood.Idle);
             if (!arriving) hopUntil = now + 1.4; // a happy hop once it's out
         }
+    }
+
+    internal void ResumeForActivity()
+    {
+        recallState = new();
+        finishedAt = null;
+        previousStatus = null;
+        Wake();
     }
 
     /// Lets the pet out (or wakes it), then jumps to its agent.
@@ -2193,6 +2218,13 @@ sealed class PetsController
     List<string> order = new(); // agent order: herdr's sidebar, then sessions oldest first
     bool polling;
     EventWaitHandle? quit;
+    readonly StoredPetHistory storedHistory = LoadStoredHistory();
+
+    static StoredPetHistory LoadStoredHistory()
+    {
+        try { return JsonSerializer.Deserialize<StoredPetHistory>(Prefs.Get("retention", "history") ?? "null") ?? new(); }
+        catch (JsonException) { return new(); }
+    }
 
     public void Start()
     {
@@ -2238,9 +2270,25 @@ sealed class PetsController
     }
 
     /// Adds a pet for each new agent and removes pets whose agents have gone.
-    void Sync(List<Agent> agents)
+    internal void Sync(List<Agent> discovered, double? at = null)
     {
+        double now = at ?? Util.Now();
+        string before = JsonSerializer.Serialize(storedHistory);
+        foreach (var agent in discovered)
+        {
+            if (storedHistory.StoredSince.TryGetValue(agent.Pane, out var since) && agent.ActivityAt is double activity &&
+                activity > since && activity < since + StoredPetHistory.Lifetime)
+                storedHistory.Observe(agent.Pane, false, now);
+        }
+        var revisions = discovered.Where(a => a.ActivityRevision != null).GroupBy(a => a.Pane)
+            .ToDictionary(group => group.Key, group => group.First().ActivityRevision!);
         bool changed = false;
+        foreach (var pane in storedHistory.Expire(now, revisions))
+        {
+            ForgetPet(pane);
+            changed = true;
+        }
+        var agents = discovered.Where(a => storedHistory.Admits(a.Pane, a.Status, a.ActivityAt, a.ActivityRevision)).ToList();
         var latestOrder = agents.Select(a => a.Pane).ToList();
         if (!latestOrder.SequenceEqual(order))
         {
@@ -2249,16 +2297,18 @@ sealed class PetsController
         }
         foreach (var pane in pets.Keys.Where(p => !order.Contains(p)).ToList())
         {
-            placed.Remove(windows[pane]);
-            windows[pane].Close();
-            windows.Remove(pane);
-            pets.Remove(pane);
+            RemovePet(pane);
             changed = true;
         }
         foreach (var agent in agents)
         {
             if (pets.TryGetValue(agent.Pane, out var existing))
             {
+                bool newActivity = (agent.ActivityAt ?? 0) > (existing.Agent.ActivityAt ?? 0);
+                bool newRevision = agent.ActivityRevision != null && existing.Agent.ActivityRevision != null &&
+                    agent.ActivityRevision != existing.Agent.ActivityRevision;
+                if ((newActivity || newRevision) && existing.CurrentMood == Mood.Stored)
+                    existing.ResumeForActivity();
                 existing.Update(agent);
                 continue;
             }
@@ -2287,12 +2337,54 @@ sealed class PetsController
                 RestingPets = () => order.Where(pets.ContainsKey).Select(p => pets[p]).Where(p => p.IsGone).ToList(),
             };
             pet.Update(agent);
+            if (storedHistory.StoredSince.TryGetValue(agent.Pane, out var storedAt) &&
+                agent.Status is not ("working" or "blocked") && (agent.ActivityAt ?? 0) <= storedAt &&
+                (agent.ActivityRevision == null || agent.ActivityRevision == storedHistory.StoredRevisions.GetValueOrDefault(agent.Pane)))
+                pet.RestoreStorage();
             pets[agent.Pane] = pet;
             windows[agent.Pane] = new PetWindow(pet);
             changed = true;
         }
+        foreach (var pane in Prefs.Keys("assignments"))
+        {
+            pets.TryGetValue(pane, out var pet);
+            bool busy = pet?.Agent.Status is "working" or "blocked";
+            double lastBusy = pet?.LastBusy ?? LastActive.Get(pane) ?? 0;
+            double since = lastBusy > 0 ? Math.Min(now, lastBusy + 12 * 3600) : now;
+            storedHistory.Observe(pane, !busy && (pet == null || pet.CurrentMood == Mood.Stored), since, pet?.Agent.ActivityRevision);
+        }
+        foreach (var pane in storedHistory.Expire(now, revisions))
+        {
+            ForgetPet(pane);
+            changed = true;
+        }
+        order.RemoveAll(p => storedHistory.ExpiredAt.ContainsKey(p));
+        string after = JsonSerializer.Serialize(storedHistory);
+        if (after != before) Prefs.Set("retention", "history", after);
         if (changed) Layout();
     }
+
+    void RemovePet(string pane)
+    {
+        if (windows.Remove(pane, out var window))
+        {
+            placed.Remove(window);
+            window.Close();
+        }
+        pets.Remove(pane);
+    }
+
+    void ForgetPet(string pane)
+    {
+        string? pokemon = Prefs.Get("assignments", pane);
+        RemovePet(pane);
+        foreach (var section in new[] { "assignments", "appearances", "lastActive" }) Prefs.Set(section, pane, null);
+        if (pane.StartsWith(CodexSessions.Prefix)) Prefs.Set("codexSeen", pane[CodexSessions.Prefix.Length..], null);
+        if (pokemon != null && !Prefs.Keys("assignments").Any(p => Prefs.Get("assignments", p) == pokemon))
+            Prefs.Set("positions", pokemon, null);
+    }
+
+    internal PetView? PetFor(string pane) => pets.GetValueOrDefault(pane);
 
     /// The pane's Pokemon from last time, or a random one no live pet is using.
     string? PokemonFor(string pane)

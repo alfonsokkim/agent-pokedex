@@ -56,6 +56,49 @@ static class WindowsTests
                 }
             }
             Look.BaseScale = PetSize.Medium;
+            double retentionStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            double retentionEnd = retentionStart + StoredPetHistory.Lifetime;
+            const string retainedPane = "test:stored-expiry";
+            var storedAgent = new Agent(retainedPane, "idle", "", "test") { ActivityAt = retentionStart - 10 };
+            Prefs.Set("assignments", retainedPane, "gengar");
+            Prefs.Set("positions", "gengar", "0,0");
+            var retained = new PetsController();
+            retained.Sync(new() { storedAgent }, retentionStart);
+            var originalPet = retained.PetFor(retainedPane)!;
+            originalPet.ReturnToBall();
+            for (int i = 0; i < 8; i++) originalPet.Animate();
+            retained.Sync(new() { storedAgent }, retentionStart);
+            retained.Sync(new() { storedAgent }, retentionEnd - 0.001);
+            Check(retained.PetFor(retainedPane)?.IsGone == true, "Stored pet is available for the full two weeks");
+            retained.Sync(new() { storedAgent }, retentionEnd);
+            Check(retained.PetFor(retainedPane) == null && Prefs.Get("assignments", retainedPane) == null, "Expiry removes the pet and assignment");
+            Check(Prefs.Get("appearances", retainedPane) == null && Prefs.Get("lastActive", retainedPane) == null &&
+                Prefs.Get("positions", "gengar") == null, "Expiry clears appearance, activity and unshared position");
+            var restartedRetention = new PetsController();
+            restartedRetention.Sync(new() { storedAgent }, retentionEnd + 1);
+            Check(restartedRetention.PetFor(retainedPane) == null, "Restart and stale status cannot resurrect a stored pet");
+            var newActivity = storedAgent with { ActivityAt = retentionEnd + 2 };
+            restartedRetention.Sync(new() { newActivity }, retentionEnd + 3);
+            Check(restartedRetention.PetFor(retainedPane) is PetView freshPet && freshPet != originalPet &&
+                Prefs.Get("assignments", retainedPane) != null, "New user activity creates a fresh random encounter");
+            restartedRetention.Sync(new());
+            var readyStored = new Agent("test:stored-ready-restart", "done", "", "test") { ActivityAt = retentionStart - 1 };
+            var beforeRestart = new PetsController();
+            beforeRestart.Sync(new() { readyStored }, retentionStart);
+            var readyPet = beforeRestart.PetFor(readyStored.Pane)!;
+            readyPet.ReturnToBall();
+            for (int i = 0; i < 8; i++) readyPet.Animate();
+            beforeRestart.Sync(new() { readyStored }, retentionStart);
+            var afterRestart = new PetsController();
+            afterRestart.Sync(new() { readyStored }, retentionStart + 60);
+            Check(afterRestart.PetFor(readyStored.Pane)?.IsGone == true, "A ready pet remains stored across restart");
+            var afterOfflineExpiry = new PetsController();
+            afterOfflineExpiry.Sync(new() { readyStored with { ActivityAt = retentionEnd + 5 } }, retentionEnd + 10);
+            Check(afterOfflineExpiry.PetFor(readyStored.Pane) is PetView offlineFresh && offlineFresh != readyPet,
+                "Expiry while closed precedes reactivation by new activity");
+            beforeRestart.Sync(new());
+            afterRestart.Sync(new());
+            afterOfflineExpiry.Sync(new());
             foreach (var kind in new[] { AgentKind.Claude, AgentKind.Codex })
             {
                 var recallAgent = new Agent("test:recall:" + kind, "done", "", "test") { Kind = kind };

@@ -38,6 +38,54 @@ static class PokemonCatalog
 
 sealed record Appearance(string Pokemon, bool Shiny);
 
+/// Only expiry markers survive cleanup, so stale provider snapshots cannot recreate old pets.
+sealed class StoredPetHistory
+{
+    public const double Lifetime = 14 * 24 * 3600;
+    public Dictionary<string, double> StoredSince { get; set; } = new();
+    public Dictionary<string, string> StoredRevisions { get; set; } = new();
+    public Dictionary<string, double> ExpiredAt { get; set; } = new();
+    public Dictionary<string, string> ExpiredRevisions { get; set; } = new();
+
+    public bool Admits(string pane, string status, double? activityAt, string? revision = null)
+    {
+        if (!ExpiredAt.TryGetValue(pane, out var cutoff)) return true;
+        bool newRevision = revision != null && ExpiredRevisions.TryGetValue(pane, out var previous) && revision != previous;
+        if (status is not ("working" or "blocked") && (activityAt ?? 0) <= cutoff && !newRevision) return false;
+        ExpiredAt.Remove(pane);
+        ExpiredRevisions.Remove(pane);
+        return true;
+    }
+
+    public void Observe(string pane, bool stored, double since, string? revision = null)
+    {
+        if (stored)
+        {
+            if (StoredSince.TryAdd(pane, since) && revision != null) StoredRevisions[pane] = revision;
+        }
+        else
+        {
+            StoredSince.Remove(pane);
+            StoredRevisions.Remove(pane);
+        }
+    }
+
+    public HashSet<string> Expire(double now, IReadOnlyDictionary<string, string>? revisions = null)
+    {
+        var expired = StoredSince.Where(pair => now - pair.Value >= Lifetime).Select(pair => pair.Key).ToHashSet();
+        foreach (var pane in expired)
+        {
+            ExpiredAt[pane] = StoredSince[pane] + Lifetime;
+            if (StoredRevisions.TryGetValue(pane, out var storedRevision)) ExpiredRevisions[pane] = storedRevision;
+            else if (revisions != null && revisions.TryGetValue(pane, out var revision)) ExpiredRevisions[pane] = revision;
+            else ExpiredRevisions.Remove(pane);
+            StoredSince.Remove(pane);
+            StoredRevisions.Remove(pane);
+        }
+        return expired;
+    }
+}
+
 /// A manual recall consumes the current completion, but never a future one.
 sealed class RecallState
 {
@@ -158,6 +206,7 @@ sealed class CodexActivity
 {
     public string Phase { get; private set; } = "idle";
     public double? ContextUsed { get; private set; }
+    public double? ActivityAt { get; private set; }
     readonly Dictionary<string, bool> questions = new();
     public string Status => questions.Count == 0 ? Phase : "blocked";
 
@@ -170,6 +219,12 @@ sealed class CodexActivity
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object) return;
             string? type = Text(root, "type"), item = Text(payload, "type");
+            if ((type == "event_msg" && item is "task_started" or "turn_started" or "task_complete" or "turn_complete" or "user_message") ||
+                (type == "response_item" && item == "message" && Text(payload, "role") == "user"))
+            {
+                if (DateTimeOffset.TryParse(Text(root, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at))
+                    ActivityAt = Math.Max(ActivityAt ?? 0, at.ToUnixTimeMilliseconds() / 1000.0);
+            }
             if (type == "event_msg")
             {
                 switch (item)

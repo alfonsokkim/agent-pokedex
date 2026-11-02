@@ -129,6 +129,13 @@ Codex chats are found automatically through their local thread state.
     work finishes or needs attention, then comes back out. A pet returned after
     completion stays away until you let it out or its session starts new work.
   - **Let Out**: call back any pet that's away.
+    Stored pets expire after two weeks. Their saved Pokemon, shiny appearance and
+    unused position are cleared, and new activity in the same chat creates a fresh
+    random encounter. Repeated old status reports cannot recreate expired pets.
+    Working agents and agents needing attention are preserved. Storage dates
+    survive restarts; older manual recalls without a date start counting from
+    the first run of this version. A small expiry timestamp is retained per
+    forgotten chat to prevent stale history from filling the list again.
   - **Line Up Pets**: a column or a row, in any corner of the display that pet
     is on. Pets are
     spaced by their real size, so a Snorlax gets more room than a Pikachu, and

@@ -68,7 +68,7 @@ static class CodexSessions
                 var (project, workspace) = CodexStore.Scope(thread);
                 result[thread.Id] = new Agent(Prefix + thread.Id, status, thread.Title, project, owners[thread.Id])
                 {
-                    Kind = AgentKind.Codex, Workspace = workspace, ContextUsed = activity?.ContextUsed,
+                    Kind = AgentKind.Codex, Workspace = workspace, ContextUsed = activity?.ContextUsed, ActivityAt = activity?.ActivityAt,
                     HostApp = Processes.HostingApp(owners[thread.Id])
                 };
             }
