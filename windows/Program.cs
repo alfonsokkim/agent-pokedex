@@ -2055,7 +2055,7 @@ sealed class PickerWindow : Window
         var count = new TextBlock { FontSize = 12, Foreground = Brushes.Gray, Margin = new Thickness(0, 8, 0, 6) };
         header.Children.Add(count);
         var grid = new UniformGrid { Columns = 8, Margin = new Thickness(8) };
-        var scroll = new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        var scroll = new ScrollViewer { Name = "PokemonResults", Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var results = new Grid();
         results.Children.Add(scroll);

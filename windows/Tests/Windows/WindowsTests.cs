@@ -216,7 +216,21 @@ static class WindowsTests
             }
             finally { sizeWindow.Content = null; sizeWindow.Close(); }
             var picker = new PickerWindow("gengar", new HashSet<string>(), _ => { }, 494, 649);
-            Check(picker.Content is System.Windows.Controls.ScrollViewer, "Generation picker scrolls within the display");
+            picker.WindowStartupLocation = WindowStartupLocation.Manual;
+            picker.Left = -32000;
+            picker.Top = -32000;
+            picker.ShowActivated = false;
+            picker.Show();
+            picker.UpdateLayout();
+            var resultsScroll = LogicalTreeHelper.FindLogicalNode(picker, "PokemonResults") as System.Windows.Controls.ScrollViewer;
+            Check(picker.ActualHeight <= SystemParameters.WorkArea.Height && resultsScroll != null && resultsScroll.ScrollableHeight > 0,
+                "Generation results scroll while the search header fits within the display");
+            resultsScroll!.ScrollToBottom();
+            picker.UpdateLayout();
+            Check(resultsScroll.VerticalOffset > 0, "The last generation row is reachable by scrolling");
+            picker.SearchField.Text = "char";
+            picker.UpdateLayout();
+            Check(resultsScroll.VerticalOffset == 0 && picker.VisiblePokemon.Length == 4, "Searching from the bottom returns to the matching results at the top");
             picker.Close();
             string unlocked = Path.Combine(temporary, "unlocked.lock");
             File.WriteAllText(unlocked, "");
