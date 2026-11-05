@@ -26,6 +26,13 @@ static class PokemonCatalog
         ("Generation III · Hoenn", 252, 386), ("Generation IV · Sinnoh", 387, 493),
         ("Generation V · Unova", 494, 649)
     };
+    public static string[] Matching(IEnumerable<Species> species, string text)
+    {
+        string query = text.Trim();
+        return species.Where(p => query.Length == 0 || new[] { p.Display, p.Slug, p.Asset }
+            .Any(name => name.Contains(query, StringComparison.OrdinalIgnoreCase))).Select(p => p.Asset).ToArray();
+    }
+
     public static Species[] Parse(Stream source)
     {
         var names = JsonSerializer.Deserialize<string[]>(source) ?? Array.Empty<string>();

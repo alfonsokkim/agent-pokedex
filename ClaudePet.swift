@@ -73,6 +73,14 @@ enum PokemonCatalog {
     static func names(in range: ClosedRange<Int>) -> [String] {
         species.filter { range.contains($0.id) }.map(\.assetName)
     }
+    static func matching(_ text: String) -> [String] {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return species.filter { pokemon in
+            query.isEmpty || [pokemon.displayName, pokemon.slug, pokemon.assetName].contains {
+                $0.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
+        }.map(\.assetName)
+    }
     static func displayName(for assetName: String) -> String {
         species.first { $0.assetName == assetName }?.displayName ?? assetName.capitalized
     }
@@ -1517,6 +1525,7 @@ final class PetView: NSView {
     /// Shift-dragging moves every pet: called with how far the mouse has gone, then nil when it's let go.
     var onDragAll: ((NSPoint?) -> Void)?
     var onChoosePokemon: ((PetView, String) -> Void)?
+    private var pokemonPickerWindow: PokemonPickerWindow?
     var onLineUp: (() -> Void)?
     /// Called as the Size slider moves, with its value.
     var onSize: ((CGFloat) -> Void)?
@@ -2235,18 +2244,15 @@ final class PetView: NSView {
         let choose = NSMenuItem(title: "Pokémon", action: nil, keyEquivalent: "")
         let choices = NSMenu()
         choices.autoenablesItems = false
-        for generation in PokemonCatalog.generations {
-            let region = NSMenuItem(title: generation.title, action: nil, keyEquivalent: "")
-            let picker = NSMenu()
-            picker.autoenablesItems = false
-            let grid = NSMenuItem()
-            grid.view = PokemonPickerView(names: PokemonCatalog.names(in: generation.range),
-                                          current: pokemon, taken: otherPokemon?() ?? []) { [weak self] name in
-                guard let self else { return }
-                self.onChoosePokemon?(self, name)
-            }
-            picker.addItem(grid)
-            region.submenu = picker
+        let all = NSMenuItem(title: "All Pokémon…", action: #selector(openPokemonPicker(_:)), keyEquivalent: "")
+        all.target = self
+        all.tag = 0
+        choices.addItem(all)
+        choices.addItem(.separator())
+        for (index, generation) in PokemonCatalog.generations.enumerated() {
+            let region = NSMenuItem(title: generation.title, action: #selector(openPokemonPicker(_:)), keyEquivalent: "")
+            region.target = self
+            region.tag = index + 1
             choices.addItem(region)
         }
         choose.submenu = choices
@@ -2290,6 +2296,16 @@ final class PetView: NSView {
         // slider moves the windows, and a menu attached to one would move too,
         // sliding the slider out from under the mouse.
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    @objc private func openPokemonPicker(_ sender: NSMenuItem) {
+        pokemonPickerWindow?.close()
+        let panel = PokemonPickerWindow(current: pokemon, taken: otherPokemon?() ?? [], generation: sender.tag) { [weak self] name in
+            guard let self else { return }
+            self.onChoosePokemon?(self, name)
+        }
+        pokemonPickerWindow = panel
+        panel.present(near: NSEvent.mouseLocation, on: window?.screen)
     }
 
     @objc func goToAgent() { clicked() }
@@ -2373,26 +2389,129 @@ final class SizeSlider: NSView {
 
 // MARK: - Pokémon picker
 
-/// A generation can contain more Pokémon than fit on screen, so each region's
-/// grid lives in a compact scrolling submenu.
-final class PokemonPickerView: NSView {
-    init(names: [String], current: String, taken: Set<String>, onPick: @escaping (String) -> Void) {
-        let grid = PokemonGrid(names: names, current: current, taken: taken, onPick: onPick)
-        let viewport = NSSize(width: grid.frame.width + 14, height: min(grid.frame.height, 520))
-        super.init(frame: NSRect(origin: .zero, size: viewport))
-        let scroll = NSScrollView(frame: bounds)
+/// A key window gives the search field normal text editing and keyboard shortcuts.
+final class PokemonPickerWindow: NSPanel {
+    let picker: PokemonPickerView
+
+    init(current: String, taken: Set<String>, generation: Int = 0, onPick: @escaping (String) -> Void) {
+        let height = min(640, (NSScreen.main?.visibleFrame.height ?? 800) - 60)
+        picker = PokemonPickerView(current: current, taken: taken, generation: generation, height: max(300, height), onPick: onPick)
+        super.init(contentRect: picker.bounds, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        title = "Choose Pokémon"
+        level = .floating
+        isReleasedWhenClosed = false
+        contentView = picker
+        picker.autoresizingMask = [.width, .height]
+        initialFirstResponder = picker.searchField
+        picker.onPick = { [weak self] name in
+            self?.close()
+            onPick(name)
+        }
+    }
+
+    override var canBecomeKey: Bool { true }
+
+    func present(near point: NSPoint, on screen: NSScreen?) {
+        let visible = (screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
+        setContentSize(NSSize(width: picker.frame.width, height: min(picker.frame.height, max(220, visible.height - 54))))
+        setFrameOrigin(NSPoint(x: max(visible.minX, min(point.x - 20, visible.maxX - frame.width)),
+                               y: max(visible.minY, min(point.y - frame.height + 30, visible.maxY - frame.height))))
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
+        makeFirstResponder(picker.searchField)
+    }
+
+    override func cancelOperation(_ sender: Any?) { close() }
+}
+
+/// Search stays above the scrolling grid and searches all generations as you type.
+final class PokemonPickerView: NSView, NSSearchFieldDelegate {
+    let searchField = NSSearchField()
+    let generations: NSSegmentedControl
+    let grid: PokemonGrid
+    let scroll = NSScrollView()
+    let resultCount = NSTextField(labelWithString: "")
+    private let emptyLabel = NSTextField(labelWithString: "No Pokémon found.")
+    private var selectedGeneration: Int
+    var onPick: (String) -> Void
+
+    init(current: String, taken: Set<String>, generation: Int = 0, height: CGFloat = 640, onPick: @escaping (String) -> Void) {
+        selectedGeneration = min(max(0, generation), PokemonCatalog.generations.count)
+        self.onPick = onPick
+        grid = PokemonGrid(names: [], current: current, taken: taken, onPick: { _ in })
+        generations = NSSegmentedControl(labels: ["All", "I · Kanto", "II · Johto", "III · Hoenn", "IV · Sinnoh", "V · Unova"],
+                                         trackingMode: .selectOne, target: nil, action: nil)
+        super.init(frame: NSRect(x: 0, y: 0, width: grid.frame.width + 14, height: height))
+        searchField.frame = NSRect(x: 14, y: 12, width: bounds.width - 28, height: 28)
+        searchField.placeholderString = "Search all Pokémon"
+        searchField.setAccessibilityLabel("Search all Pokémon")
+        searchField.delegate = self
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.sendsWholeSearchString = false
+        searchField.sendsSearchStringImmediately = true
+        addSubview(searchField)
+        generations.frame = NSRect(x: 14, y: 48, width: bounds.width - 28, height: 26)
+        generations.target = self
+        generations.action = #selector(generationChanged)
+        generations.setAccessibilityLabel("Pokémon generation")
+        addSubview(generations)
+        resultCount.frame = NSRect(x: 16, y: 82, width: bounds.width - 32, height: 18)
+        resultCount.font = .systemFont(ofSize: 11)
+        resultCount.textColor = .secondaryLabelColor
+        addSubview(resultCount)
+        scroll.frame = NSRect(x: 0, y: 106, width: bounds.width, height: bounds.height - 106)
+        scroll.autoresizingMask = [.width, .height]
         scroll.drawsBackground = false
-        scroll.hasVerticalScroller = grid.frame.height > viewport.height
+        scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = grid
-        scroll.contentView.scroll(to: .zero)
         addSubview(scroll)
+        emptyLabel.frame = NSRect(x: 16, y: 140, width: bounds.width - 32, height: 22)
+        emptyLabel.alignment = .center
+        emptyLabel.textColor = .secondaryLabelColor
+        addSubview(emptyLabel)
+        grid.onPick = { [weak self] name in self?.onPick(name) }
+        updateResults()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+    override var isFlipped: Bool { true }
+
+    func controlTextDidChange(_ notification: Notification) { updateResults() }
+    @objc private func searchChanged() { updateResults() }
+
+    @objc private func generationChanged() {
+        selectedGeneration = generations.selectedSegment
+        searchField.stringValue = ""
+        updateResults()
+    }
+
+    func updateResults() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        generations.selectedSegment = query.isEmpty ? selectedGeneration : 0
+        let names: [String]
+        if !query.isEmpty || selectedGeneration == 0 {
+            names = PokemonCatalog.matching(query)
+        } else {
+            names = PokemonCatalog.names(in: PokemonCatalog.generations[selectedGeneration - 1].range)
+        }
+        grid.setNames(names)
+        scroll.contentView.scroll(to: .zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        resultCount.stringValue = "\(grid.names.count) Pokémon" + (query.isEmpty ? "" : " · All generations")
+        emptyLabel.isHidden = !grid.names.isEmpty
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(cancelOperation(_:)) else { return false }
+        if searchField.stringValue.isEmpty { window?.close() }
+        else { searchField.stringValue = ""; updateResults() }
+        return true
+    }
 }
 
-/// Every Pokémon as its sprite in a grid, shown in the right-click menu. The
+/// Every Pokémon as its sprite in the picker grid. The
 /// current one is highlighted, ones other agents have are faded (picking one
 /// swaps), and the hovered one walks in place.
 final class PokemonGrid: NSView {
@@ -2400,10 +2519,10 @@ final class PokemonGrid: NSView {
     static let cell = NSSize(width: 68, height: 84)
     static let padding: CGFloat = 8
 
-    let names: [String]
+    private(set) var names: [String]
     let current: String
     let taken: Set<String>
-    let onPick: (String) -> Void
+    var onPick: (String) -> Void
     var hovered: Int?
     var step = 0
     var timer: Timer?
@@ -2422,6 +2541,15 @@ final class PokemonGrid: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var isFlipped: Bool { true }
+
+    func setNames(_ names: [String]) {
+        self.names = names.filter { SpriteSheet.named($0) != nil }
+        hovered = nil
+        step = 0
+        let rows = (self.names.count + Self.columns - 1) / Self.columns
+        setFrameSize(NSSize(width: frame.width, height: CGFloat(rows) * Self.cell.height + 2 * Self.padding))
+        needsDisplay = true
+    }
 
     func cellRect(_ i: Int) -> NSRect {
         NSRect(x: Self.padding + CGFloat(i % Self.columns) * Self.cell.width,

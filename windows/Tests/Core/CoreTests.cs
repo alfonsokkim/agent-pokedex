@@ -24,6 +24,12 @@ Check(PokemonCatalog.Generations.Select(g => species.Count(p => p.Id >= g.First 
     .SequenceEqual(new[] { 151, 100, 135, 107, 156 }), "Generation boundaries");
 Check(species.Single(p => p.Id == 29).Display == "Nidoran♀", "Special species labels");
 Check(species.Single(p => p.Id == 122).Asset == "mr_mime", "Asset names must match the shared sprite source");
+Check(PokemonCatalog.Matching(species, "CHAR").SequenceEqual(new[] { "charmander", "charmeleon", "charizard", "chimchar" }), "Case-insensitive substring search");
+Check(PokemonCatalog.Matching(species, "  porygon  ").SequenceEqual(new[] { "porygon", "porygon2", "porygon_z" }), "Cross-generation matching and trimmed query");
+foreach (string query in new[] { "mr. mi", "mr-mime", "mr_mime" })
+    Check(PokemonCatalog.Matching(species, query).SequenceEqual(new[] { "mr_mime" }), "Display, catalog and asset names are searchable");
+Check(PokemonCatalog.Matching(species, "zzzzzz").Length == 0, "Unmatched queries have no results");
+Check(PokemonCatalog.Matching(species, "").Length == 649, "Clearing search restores the full catalog");
 Check(Enumerable.Range(0, 25).Count(i => EncounterRules.Resolve(null, "virizion", roll: () => i).Shiny) == 1, "Exactly 1 in 25");
 var saved = new Appearance("virizion", true);
 Check(EncounterRules.Resolve(saved, "virizion", roll: () => throw new Exception("Unexpected reroll")) == saved, "Persistent appearance");

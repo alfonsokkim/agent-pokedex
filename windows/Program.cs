@@ -1810,6 +1810,8 @@ sealed class PetView : FrameworkElement
             menu.Items.Add(letOut);
         }
         var pokemonMenu = new MenuItem { Header = "Pokemon" };
+        pokemonMenu.Items.Add(Item("All Pokemon…", () => OnPickGeneration?.Invoke(this, 1, 649)));
+        pokemonMenu.Items.Add(new Separator());
         foreach (var generation in PokemonCatalog.Generations)
         {
             var selected = generation;
@@ -1997,10 +1999,13 @@ sealed class ThrowWindow : Window
 sealed class PickerWindow : Window
 {
     bool closing;
+    internal TextBox SearchField { get; } = new();
+    internal ComboBox GenerationSelector { get; } = new();
+    internal string[] VisiblePokemon { get; private set; } = Array.Empty<string>();
 
     public PickerWindow(string current, ISet<string> taken, Action<string> onPick, int first = 1, int last = 649)
     {
-        Title = "Pick a Pokemon";
+        Title = "Choose Pokemon";
         WindowStyle = WindowStyle.ToolWindow;
         ResizeMode = ResizeMode.NoResize;
         SizeToContent = SizeToContent.WidthAndHeight;
@@ -2021,66 +2026,115 @@ sealed class PickerWindow : Window
         };
         timer.Start();
 
+        var layout = new DockPanel { Width = 680, Height = Math.Max(300, Math.Min(640, SystemParameters.WorkArea.Height - 80)) };
+        var header = new StackPanel { Margin = new Thickness(14, 12, 14, 0) };
+        DockPanel.SetDock(header, Dock.Top);
+        layout.Children.Add(header);
+        var searchRow = new DockPanel();
+        var clear = new Button { Content = "Clear", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0) };
+        DockPanel.SetDock(clear, Dock.Right);
+        searchRow.Children.Add(clear);
+        var searchContainer = new Grid();
+        SearchField.Padding = new Thickness(7, 5, 7, 5);
+        SearchField.FontSize = 14;
+        SearchField.ToolTip = "Search all Pokemon";
+        System.Windows.Automation.AutomationProperties.SetName(SearchField, "Search all Pokemon");
+        searchContainer.Children.Add(SearchField);
+        var placeholder = new TextBlock { Text = "Search all Pokemon", Foreground = Brushes.Gray,
+            Margin = new Thickness(9, 6, 0, 0), IsHitTestVisible = false };
+        searchContainer.Children.Add(placeholder);
+        searchRow.Children.Add(searchContainer);
+        header.Children.Add(searchRow);
+        GenerationSelector.Margin = new Thickness(0, 9, 0, 0);
+        GenerationSelector.Items.Add("All generations");
+        foreach (var generation in PokemonCatalog.Generations) GenerationSelector.Items.Add(generation.Title);
+        int selectedGeneration = Array.FindIndex(PokemonCatalog.Generations, g => g.First == first && g.Last == last) + 1;
+        GenerationSelector.SelectedIndex = selectedGeneration;
+        System.Windows.Automation.AutomationProperties.SetName(GenerationSelector, "Pokemon generation");
+        header.Children.Add(GenerationSelector);
+        var count = new TextBlock { FontSize = 12, Foreground = Brushes.Gray, Margin = new Thickness(0, 8, 0, 6) };
+        header.Children.Add(count);
         var grid = new UniformGrid { Columns = 8, Margin = new Thickness(8) };
+        var scroll = new ScrollViewer { Content = grid, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        var results = new Grid();
+        results.Children.Add(scroll);
+        var empty = new TextBlock { Text = "No Pokemon found.", HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 28, 0, 0), Foreground = Brushes.Gray };
+        results.Children.Add(empty);
+        layout.Children.Add(results);
+        Content = layout;
         var highlight = new SolidColorBrush(Color.FromArgb(77, 0, 120, 215));
         var hover = new SolidColorBrush(Color.FromArgb(26, 0, 0, 0));
-        foreach (var name in Roster.Species.Where(p => p.Id >= first && p.Id <= last).Select(p => p.Asset))
-        {
-            if (SpriteSheet.Named(name) is not SpriteSheet sheet) continue;
-            bool inUse = taken.Contains(name);
-            var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64, Opacity = inUse ? 0.4 : 1 };
-            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
-            var label = new TextBlock
-            {
-                Text = Roster.Display(name),
-                FontSize = 11,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Foreground = inUse ? Brushes.Gray : Brushes.Black,
-            };
-            var cell = new Border
-            {
-                Width = 76,
-                Height = 90,
-                Margin = new Thickness(2),
-                CornerRadius = new CornerRadius(6),
-                Background = name == current ? highlight : Brushes.Transparent,
-                Cursor = Cursors.Hand,
-                Child = new StackPanel { Children = { image, label } },
-            };
-            cell.MouseEnter += (_, _) =>
-            {
-                if (name != current) cell.Background = hover;
-                hoveredImage = image;
-                hoveredSheet = sheet;
-            };
-            cell.MouseLeave += (_, _) =>
-            {
-                if (name != current) cell.Background = Brushes.Transparent;
-                image.Source = sheet.Frames[0];
-                hoveredImage = null;
-            };
-            cell.MouseLeftButtonUp += (_, _) =>
-            {
-                onPick(name);
-                if (!closing) Close();
-            };
-            grid.Children.Add(cell);
-        }
-        Content = new ScrollViewer { Content = grid, MaxHeight = Math.Max(200, SystemParameters.WorkArea.Height - 120),
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        bool updating = false;
 
-        Closing += (_, _) =>
+        void Refresh()
         {
-            closing = true;
-            timer.Stop();
-        };
-        Deactivated += (_, _) =>
+            string query = SearchField.Text.Trim();
+            updating = true;
+            GenerationSelector.SelectedIndex = query.Length == 0 ? selectedGeneration : 0;
+            updating = false;
+            placeholder.Visibility = SearchField.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            hoveredImage = null;
+            hoveredSheet = null;
+            step = 0;
+            grid.Children.Clear();
+            var species = query.Length > 0 || selectedGeneration == 0 ? Roster.Species :
+                Roster.Species.Where(p => p.Id >= PokemonCatalog.Generations[selectedGeneration - 1].First &&
+                    p.Id <= PokemonCatalog.Generations[selectedGeneration - 1].Last).ToArray();
+            VisiblePokemon = PokemonCatalog.Matching(species, query).Where(name => SpriteSheet.Named(name) != null).ToArray();
+            foreach (var name in VisiblePokemon)
+            {
+                var sheet = SpriteSheet.Named(name)!;
+                bool inUse = taken.Contains(name);
+                var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64, Opacity = inUse ? 0.4 : 1 };
+                RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
+                var label = new TextBlock { Text = Roster.Display(name), FontSize = 11,
+                    HorizontalAlignment = HorizontalAlignment.Center, Foreground = inUse ? Brushes.Gray : Brushes.Black };
+                var cell = new Border { Width = 76, Height = 90, Margin = new Thickness(2), CornerRadius = new CornerRadius(6),
+                    Background = name == current ? highlight : Brushes.Transparent, Cursor = Cursors.Hand,
+                    Child = new StackPanel { Children = { image, label } } };
+                cell.MouseEnter += (_, _) =>
+                {
+                    if (name != current) cell.Background = hover;
+                    hoveredImage = image;
+                    hoveredSheet = sheet;
+                };
+                cell.MouseLeave += (_, _) =>
+                {
+                    if (name != current) cell.Background = Brushes.Transparent;
+                    image.Source = sheet.Frames[0];
+                    hoveredImage = null;
+                    hoveredSheet = null;
+                };
+                cell.MouseLeftButtonUp += (_, _) => { onPick(name); if (!closing) Close(); };
+                grid.Children.Add(cell);
+            }
+            count.Text = $"{VisiblePokemon.Length} Pokemon" + (query.Length > 0 ? " · All generations" : "");
+            empty.Visibility = VisiblePokemon.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            scroll.ScrollToTop();
+        }
+        SearchField.TextChanged += (_, _) => { if (!updating) Refresh(); };
+        clear.Click += (_, _) => { SearchField.Clear(); SearchField.Focus(); };
+        GenerationSelector.SelectionChanged += (_, _) =>
         {
-            if (!closing) Close();
+            if (updating) return;
+            selectedGeneration = GenerationSelector.SelectedIndex;
+            updating = true;
+            SearchField.Clear();
+            updating = false;
+            Refresh();
         };
+        Refresh();
+        Loaded += (_, _) => SearchField.Focus();
+        Closing += (_, _) => { closing = true; timer.Stop(); };
+        Deactivated += (_, _) => { if (!closing) Close(); };
         KeyDown += (_, e) =>
         {
-            if (e.Key == Key.Escape && !closing) Close();
+            if (e.Key != Key.Escape || closing) return;
+            if (SearchField.Text.Length > 0) SearchField.Clear();
+            else Close();
+            e.Handled = true;
         };
     }
 }

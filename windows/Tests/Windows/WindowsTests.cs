@@ -35,6 +35,19 @@ static class WindowsTests
                     for (int i = 3; i < normal.Pixels[frame].Length; i += 4)
                         if (normal.Pixels[frame][i] != shiny.Pixels[frame][i]) throw new Exception($"Shiny silhouette: {name}");
             }
+            var searchPicker = new PickerWindow("gengar", new HashSet<string> { "pikachu" }, _ => { }, 1, 151);
+            Check(searchPicker.VisiblePokemon.Length == 151, "Picker starts in the selected generation");
+            searchPicker.SearchField.Text = "ZOR";
+            Check(searchPicker.VisiblePokemon.SequenceEqual(new[] { "scizor", "bronzor", "zorua", "zoroark" }), "Typing searches across generations immediately");
+            Check(searchPicker.GenerationSelector.SelectedIndex == 0, "Global results identify their scope");
+            searchPicker.SearchField.Text = "zzzzzz";
+            Check(searchPicker.VisiblePokemon.Length == 0, "No stale cells remain for an unmatched search");
+            searchPicker.SearchField.Clear();
+            Check(searchPicker.VisiblePokemon.Length == 151 && searchPicker.GenerationSelector.SelectedIndex == 1, "Clearing restores the selected region");
+            searchPicker.SearchField.Text = "char";
+            searchPicker.GenerationSelector.SelectedIndex = 5;
+            Check(searchPicker.SearchField.Text.Length == 0 && searchPicker.VisiblePokemon.Length == 156, "Changing regions clears search");
+            searchPicker.Close();
             int Greens(SpriteSheet sheet) => Enumerable.Range(0, sheet.Size * sheet.Size).Count(i =>
                 sheet.Pixels[0][i * 4 + 3] > 0 && sheet.Pixels[0][i * 4 + 1] > sheet.Pixels[0][i * 4 + 2] + 15 &&
                 sheet.Pixels[0][i * 4 + 1] > sheet.Pixels[0][i * 4] + 15);

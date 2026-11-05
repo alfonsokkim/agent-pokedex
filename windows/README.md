@@ -38,7 +38,10 @@ the app on a Windows desktop.
   Codex CLI. Each chat should have one pet, with the correct provider badge.
 - Ask Codex a question that uses request_user_input_async. Its pet should flash
   red until the reply is sent, including if other tool calls complete first.
-- Check all five generation menus and confirm normal Virizion is green.
+- Check All Pokemon and all five generation menus. Type `char` in the search
+  field and confirm Charmander, Charmeleon, Charizard and Chimchar appear without
+  pressing Enter. Check clearing search, switching generations, no matches and
+  choosing a filtered result. Confirm normal Virizion is green.
 - Recall and release pets. Each release rolls 1 in 25; hiding, sleeping, and
   restarting preserve an existing appearance. Picking a species starts normal.
 - Recall a ready pet: its current completion is dismissed and it stays hidden.
