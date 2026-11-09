@@ -58,6 +58,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build check
         run: swiftc -parse-as-library -swift-version 5 ClaudePet.swift -o "$RUNNER_TEMP/ClaudePet"
+      - name: Installer regression tests
+        run: python3 Tests/InstallerTests.py
       - name: Sprite and behaviour regression tests
         run: |
           zsh fetch-sprites.sh

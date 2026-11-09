@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Sets up Claude Agent Pokédex on this Mac: downloads the sprites, builds
+# Sets up Agent Pokédex on this Mac: downloads the sprites, installs
 # Claude Pet.app into ~/Applications, installs the `claude-pet` command and
 # `/pet` in Claude Code, adds the Claude Code hooks that report each session's
 # status, then starts it. Safe to re-run, for example after pulling changes.
@@ -31,13 +31,41 @@ case "$1" in
     ;;
 esac
 
-if ! command -v swiftc >/dev/null; then
-  echo "Building needs Xcode's command-line tools. Run: xcode-select --install"
+prebuilt="$here/Claude Pet.app"
+if [[ -d "$prebuilt" ]]; then
+  codesign --verify --deep --strict \
+    -R '=anchor apple generic and certificate leaf[subject.OU] = "D47CYV4C79" and identifier "com.alfonsokim.claude-pet"' "$prebuilt"
+  spctl --assess --type execute "$prebuilt"
+elif ! command -v swiftc >/dev/null; then
+  echo "Building from source needs Xcode's command-line tools. Run: xcode-select --install"
   exit 1
 fi
 
 zsh "$here/fetch-sprites.sh"
-zsh "$here/build.sh"
+if [[ -d "$prebuilt" ]]; then
+  mkdir -p "$HOME/Applications"
+  stage=$(mktemp -d "$HOME/Applications/.agent-pokedex.XXXXXX")
+  cleanup_install() {
+    if [[ ! -e "$app" && -e "$stage/previous.app" ]]; then
+      mv "$stage/previous.app" "$app"
+    fi
+    rm -rf "$stage"
+  }
+  trap cleanup_install EXIT
+  trap 'exit 1' INT TERM HUP
+  ditto "$prebuilt" "$stage/Claude Pet.app"
+  codesign --verify --deep --strict "$stage/Claude Pet.app"
+  pkill -x ClaudePet 2>/dev/null || true
+  if [[ -e "$app" ]]; then
+    mv "$app" "$stage/previous.app"
+  fi
+  if ! mv "$stage/Claude Pet.app" "$app"; then
+    [[ ! -e "$stage/previous.app" ]] || mv "$stage/previous.app" "$app"
+    exit 1
+  fi
+else
+  zsh "$here/build.sh"
+fi
 
 mkdir -p ~/.local/bin ~/.claude/commands
 install -m 755 "$here/claude-pet" ~/.local/bin/claude-pet

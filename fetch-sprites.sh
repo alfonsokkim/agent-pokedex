@@ -18,15 +18,22 @@ trap 'rm -f "$catalog_tmp" "$names_tmp" "$jobs_tmp"' EXIT
 curl -fsSL 'https://pokeapi.co/api/v2/pokemon-species?limit=649&offset=0' -o "$catalog_tmp"
 mv "$catalog_tmp" "$catalog"
 
-/usr/bin/swift -e '
-import Foundation
-struct Response: Decodable {
-    struct Entry: Decodable { let name: String }
-    let results: [Entry]
+/usr/bin/osascript -l JavaScript -e '
+ObjC.import("Foundation");
+function run(args) {
+  var text = $.NSString.stringWithContentsOfFileEncodingError(args[0], $.NSUTF8StringEncoding, null);
+  if (!text) throw new Error("Cannot read Pokémon catalog");
+  var catalog = JSON.parse(ObjC.unwrap(text));
+  if (!Array.isArray(catalog.results) || catalog.results.length < 649) {
+    throw new Error("Pokémon catalog must contain all 649 species");
+  }
+  return catalog.results.slice(0, 649).map(function (entry) {
+    if (typeof entry.name !== "string" || !/^[a-z0-9-]+$/.test(entry.name)) {
+      throw new Error("Invalid Pokémon name in catalog");
+    }
+    return entry.name;
+  }).join("\n");
 }
-let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
-let response = try JSONDecoder().decode(Response.self, from: data)
-for pokemon in response.results.prefix(649) { print(pokemon.name) }
 ' "$catalog" > "$names_tmp"
 
 while IFS= read -r name; do

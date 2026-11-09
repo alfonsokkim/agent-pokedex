@@ -29,7 +29,7 @@ shoot outward, twinkle, and fade once per hover, without changing its colours.
 
 | | |
 | --- | --- |
-| **Mac** (macOS 14 or later) | [claude-agent-pokedex-mac.zip](https://github.com/alfonsokkim/agent-pokedex/releases/latest/download/claude-agent-pokedex-mac.zip) |
+| **Mac** (macOS 14 or later) | [Signed Mac preview](https://github.com/alfonsokkim/agent-pokedex/releases/download/mac-notarized-2026-11-09/agent-pokedex-mac.zip) |
 | **Windows** (Windows 10 or 11, 64-bit) | [claude-agent-pokedex-windows.zip](https://github.com/alfonsokkim/agent-pokedex/releases/latest/download/claude-agent-pokedex-windows.zip) |
 
 The Mac app supports [Claude Code](https://claude.com/claude-code), the Codex
@@ -52,17 +52,23 @@ Mac-specific navigation and project ordering are not advertised as Windows featu
 
 ## Install on a Mac
 
-The Mac app is built on your machine, so you need Xcode's command-line tools:
-`xcode-select --install`.
+The signed Mac preview includes a prebuilt universal app for Apple Silicon and
+Intel Macs. It is signed with Developer ID and notarized by Apple. Xcode and its
+command-line tools are not needed for this download. The preview contains the
+Mac fixes from the `windows-parity` branch; it does not replace the Windows release.
+
+The first setup downloads the sprite assets and installs the Claude Code hooks.
+Sprites remain outside the app bundle. Keep the app bundle intact so its signature
+and attached notarization ticket remain valid.
 
 Unzip the download, then in Terminal:
 
 ```bash
-cd ~/Downloads/claude-agent-pokedex-mac
+cd ~/Downloads/agent-pokedex-mac
 zsh install.sh
 ```
 
-Or with git:
+Or build from source with git (requires `xcode-select --install`):
 
 ```bash
 git clone https://github.com/alfonsokkim/agent-pokedex.git
@@ -73,13 +79,14 @@ cd agent-pokedex
 The installer:
 
 1. downloads all 649 Gen I to V sprites (they aren't shipped here, see [Sprites](#sprites))
-2. builds `Claude Pet.app` into `~/Applications`
+2. copies the signed `Claude Pet.app` into `~/Applications`, or builds it when installing from source
 3. adds a `claude-pet` command and a `/pet` command for Claude Code
 4. adds a set of hooks to `~/.claude/settings.json` so each session can report
    its status, leaving your other settings exactly as they were
 5. starts the app. Codex sessions are discovered automatically and need no hooks
 
-Run it again any time, for example after a `git pull`. To start the pets when
+Confirm **Open** if macOS asks whether you want to open the downloaded app.
+Run the installer again to update from a new download, or after a `git pull` when building from source. To start the pets when
 you log in, add **Claude Pet** under System Settings → General → Login Items.
 
 ## Install on Windows

@@ -2,19 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key>
-  <string>com.alfonsokim.claude-pet</string>
-  <key>CFBundleName</key>
-  <string>Claude Pet</string>
-  <key>CFBundleExecutable</key>
-  <string>ClaudePet</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
-  <key>LSUIElement</key>
-  <true/>
+	<key>CFBundleIdentifier</key>
+	<string>com.alfonsokim.claude-pet</string>
+	<key>CFBundleName</key>
+	<string>Claude Pet</string>
+	<key>CFBundleExecutable</key>
+	<string>ClaudePet</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.8.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>CFBundleVersion</key>
+	<string>2026110901</string>
 </dict>
 </plist>
