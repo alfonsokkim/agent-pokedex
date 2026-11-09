@@ -138,8 +138,6 @@ struct SpriteSheet {
     /// Each frame's visible pixels, from its leftmost to rightmost and topmost
     /// to bottommost, in pixels from the frame's top-left corner.
     let boxes: [CGRect]
-    var sideWalkFrames: [CGImage]? = nil
-    var sideWalkBounds: CGRect? = nil
 
     static let directory = NSHomeDirectory() + "/.local/share/claude-pet/sprites"
     static var cache: [String: SpriteSheet] = [:]
@@ -163,17 +161,8 @@ struct SpriteSheet {
             let half = frame.width / 2
             return box.isEmpty ? (frame.height, 0) : (Int(box.minY), max(half - Int(box.minX), Int(box.maxX) - half))
         }
-        var sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
+        let sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
                                 halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
-        if name == "golurk" {
-            sheet.sideWalkFrames = (0..<armSwingPhases).flatMap { phase in
-                [4, 5].map { armSwing(frames[$0], angle: armSwingAngle(phase: phase)) }
-            }
-            sheet.sideWalkBounds = sheet.sideWalkFrames?.map { image in
-                let box = visibleBox(of: image)
-                return CGRect(x: box.minX / 4, y: box.minY / 4, width: box.width / 4, height: box.height / 4)
-            }.reduce(CGRect.null) { $0.union($1) }
-        }
         cache[key] = sheet
         return sheet
     }
@@ -280,59 +269,6 @@ struct SpriteSheet {
                   space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return original }
         return image
-    }
-
-    static let armSwingPhases = 32
-    static func armSwingAngle(phase: Int) -> CGFloat {
-        sin(CGFloat(phase) * 2 * .pi / CGFloat(armSwingPhases)) * 6 * .pi / 180
-    }
-    static func armSwingIndex(step: Int, time: TimeInterval, reducedMotion: Bool = false) -> Int {
-        let phase = reducedMotion ? 0 : Int((time - floor(time)) * Double(armSwingPhases))
-        return phase * 2 + step
-    }
-
-    /// A single rigid arm rotates around the shoulder at (21.5, 12.5).
-    /// Four output pixels per source pixel preserve subtle angular changes.
-    static func armSwing(_ image: CGImage, angle: CGFloat) -> CGImage {
-        guard image.width == 32, image.height == 32,
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let source = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8,
-                  bytesPerRow: 128, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
-        source.draw(image, in: CGRect(x: 0, y: 0, width: 32, height: 32))
-        guard let input = source.data?.assumingMemoryBound(to: UInt8.self) else { return image }
-        var body = Array(UnsafeBufferPointer(start: input, count: 32 * 32 * 4))
-        var arm = [UInt8](repeating: 0, count: body.count)
-        // Follow the full arm contour from the shoulder cap to the gauntlet.
-        let left = [20, 20, 19, 19, 19, 18, 18, 18, 16, 15, 15, 14, 14, 14, 14, 15, 16]
-        let right = [22, 22, 22, 22, 22, 22, 21, 21, 21, 21, 21, 21, 21, 21, 21, 20, 19]
-        for row in left.indices {
-            let y = row + 12
-            for x in left[row]...right[row] {
-                let index = (y * 32 + x) * 4
-                let sourceIndex = y == 19 && x >= 20 ? (y * 32 + x - 1) * 4 : index
-                for channel in 0..<4 { arm[index + channel] = input[sourceIndex + channel] }
-                // The shared contour also outlines the torso or rear leg.
-                if row < 15 && x == left[row] { continue }
-                for channel in 0..<4 { body[index + channel] = 0 }
-            }
-        }
-        func bitmap(_ bytes: [UInt8]) -> CGImage? {
-            guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-            return CGImage(width: 32, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 128,
-                space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-        }
-        guard let bodyImage = bitmap(body), let armImage = bitmap(arm),
-              let output = CGContext(data: nil, width: 128, height: 128, bitsPerComponent: 8,
-                  bytesPerRow: 512, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
-        output.interpolationQuality = .none
-        output.setShouldAntialias(false)
-        output.scaleBy(x: 4, y: 4)
-        output.draw(bodyImage, in: CGRect(x: 0, y: 0, width: 32, height: 32))
-        output.translateBy(x: 21.5, y: 32 - 12.5)
-        output.rotate(by: angle)
-        output.draw(armImage, in: CGRect(x: -21.5, y: -(32 - 12.5), width: 32, height: 32))
-        return output.makeImage() ?? image
     }
 
     /// The first PLTE entry, which Gen 3 graphics treat as transparent.
@@ -1724,7 +1660,6 @@ final class PetView: NSView {
             window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
         }
         setFrameSize(size)
-        updateArmTimer()
         needsDisplay = true
     }
 
@@ -1856,36 +1791,7 @@ final class PetView: NSView {
             walkDirection = walkX > 0 ? -1 : 1
             walkX = abs(walkX) <= speed ? 0 : walkX + walkDirection * speed
         }
-        updateArmTimer()
         needsDisplay = true
-    }
-
-    private var armTimer: Timer?
-    #if TESTING
-    var armAnimationRunning: Bool { armTimer?.isValid == true }
-    #endif
-    private var animatesArm: Bool {
-        window?.isVisible == true && sheet.sideWalkFrames != nil && (mood == .working || walkX != 0)
-            && !arriving && transition == nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        updateArmTimer()
-    }
-
-    private func updateArmTimer() {
-        guard animatesArm else { armTimer?.invalidate(); armTimer = nil; return }
-        guard armTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else { timer.invalidate(); return }
-                guard self.animatesArm else { self.updateArmTimer(); return }
-                self.needsDisplay = true
-            }
-        }
-        armTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     // MARK: Drawing
@@ -1915,11 +1821,6 @@ final class PetView: NSView {
             } else {
                 image = frames[4 + step]
                 mirrored = right
-            }
-            if let sideWalk = sheet.sideWalkFrames {
-                let index = SpriteSheet.armSwingIndex(step: step, time: ProcessInfo.processInfo.systemUptime,
-                    reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-                image = sideWalk[index]
             }
         } else if spinning {
             // Turn on the ground through front, side, back, and the other side.
@@ -2238,7 +2139,7 @@ final class PetView: NSView {
     }
 
     func drawSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool) {
-        drawPixelSprite(image, in: rect, mirrored: mirrored, nearest: image.width > sheet.frames[0].width)
+        drawPixelSprite(image, in: rect, mirrored: mirrored)
     }
 
     /// A pixel-art shadow on the ground, on the sprite's own pixel grid: a 3-row
@@ -2283,8 +2184,7 @@ final class PetView: NSView {
     var hitBox: NSRect {
         let (frames, mirrored) = pose
         let width = CGFloat(sheet.frames[0].width)
-        var box = frames.map { sheet.boxes[$0] }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
-        if frames.first == 4, let armBounds = sheet.sideWalkBounds { box = box.union(armBounds) }
+        let box = frames.map { sheet.boxes[$0] }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
         guard !box.isNull else { return .zero }
         let left = mirrored ? width - box.maxX : box.minX
         return NSRect(x: homeX + walkX + left * Self.scale, y: Self.spriteTop + box.minY * Self.scale,
