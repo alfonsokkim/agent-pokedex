@@ -236,6 +236,27 @@ static class WindowsTests
             picker.SearchField.Text = "char";
             picker.UpdateLayout();
             Check(resultsScroll.VerticalOffset == 0 && picker.VisiblePokemon.Length == 4, "Searching from the bottom returns to the matching results at the top");
+            picker.SearchField.Clear();
+            picker.GenerationSelector.SelectedIndex = 0;
+            picker.UpdateLayout();
+            foreach (System.Windows.Controls.TabItem tab in picker.GenerationSelector.Items)
+            {
+                var origin = tab.TranslatePoint(new Point(0, 0), picker.GenerationSelector);
+                Check(tab.ActualHeight > 0 && origin.X >= 0 && origin.Y >= 0 &&
+                    origin.X + tab.ActualWidth <= picker.GenerationSelector.ActualWidth + 1 &&
+                    origin.Y + tab.ActualHeight <= picker.GenerationSelector.ActualHeight + 1,
+                    "Generation tabs fit in the header without clipping");
+            }
+            if (args.Length > 0)
+            {
+                Directory.CreateDirectory(args[0]);
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+                var content = (FrameworkElement)picker.Content;
+                var image = new RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth), (int)Math.Ceiling(content.ActualHeight),
+                    96, 96, PixelFormats.Pbgra32);
+                image.Render(content);
+                Save(image, Path.Combine(args[0], "windows-pokemon-picker.png"));
+            }
             picker.Close();
             string unlocked = Path.Combine(temporary, "unlocked.lock");
             File.WriteAllText(unlocked, "");
