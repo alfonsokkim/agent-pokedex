@@ -273,9 +273,15 @@ sealed class SpriteSheet
             if (sheet != null && (name is "charmander" or "squirtle")) sheet = ApplyFronts(sheet, name, shiny);
             if (sheet != null && name == "golurk")
             {
-                sheet.SideWalkPixels = new[] { SpriteMotion.GolurkArmSwing(sheet.Pixels[4], sheet.Size, -1),
-                    SpriteMotion.GolurkArmSwing(sheet.Pixels[5], sheet.Size, 1) };
-                sheet.SideWalkFrames = sheet.SideWalkPixels.Select(pixels => Bitmap(pixels, sheet.Size)).ToArray();
+                sheet.SideWalkFrames = Enumerable.Range(0, SpriteMotion.ArmSwingPhases).SelectMany(phase =>
+                    new[] { ArmSwing(sheet.Pixels[4], SpriteMotion.ArmAngle(phase)),
+                        ArmSwing(sheet.Pixels[5], SpriteMotion.ArmAngle(phase)) }).ToArray();
+                sheet.SideWalkPixels = sheet.SideWalkFrames.Select(frame =>
+                {
+                    var pixels = new byte[frame.PixelWidth * frame.PixelHeight * 4];
+                    frame.CopyPixels(pixels, frame.PixelWidth * 4, 0);
+                    return pixels;
+                }).ToArray();
             }
             if (sheet != null) cache[key] = sheet;
         }
@@ -395,6 +401,28 @@ sealed class SpriteSheet
         {
             return null;
         }
+    }
+
+    static BitmapSource ArmSwing(byte[] source, double angle)
+    {
+        var (body, arm) = SpriteMotion.GolurkArmLayers(source, 32);
+        var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.NearestNeighbor);
+        RenderOptions.SetEdgeMode(visual, EdgeMode.Aliased);
+        using (var drawing = visual.RenderOpen())
+        {
+            drawing.PushTransform(new ScaleTransform(4, 4));
+            drawing.DrawImage(Bitmap(body, 32), new Rect(0, 0, 32, 32));
+            drawing.PushTransform(new RotateTransform(-angle, 21.5, 12.5));
+            drawing.DrawImage(Bitmap(arm, 32), new Rect(0, 0, 32, 32));
+            drawing.Pop();
+            drawing.Pop();
+        }
+        var image = new RenderTargetBitmap(128, 128, 96, 96, PixelFormats.Pbgra32);
+        image.Render(visual);
+        var result = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+        result.Freeze();
+        return result;
     }
 
     public static BitmapSource Bitmap(byte[] px, int size)
@@ -1237,7 +1265,8 @@ sealed class PetView : FrameworkElement
         Width = Look.Width;
         Height = ViewHeight;
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
-        Loaded += (_, _) => UpdateDpi(VisualTreeHelper.GetDpi(this).DpiScaleX);
+        Loaded += (_, _) => { UpdateDpi(VisualTreeHelper.GetDpi(this).DpiScaleX); UpdateArmTimer(); };
+        Unloaded += (_, _) => { armTimer?.Stop(); armTimer = null; };
     }
 
     protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi) => UpdateDpi(newDpi.DpiScaleX);
@@ -1460,7 +1489,26 @@ sealed class PetView : FrameworkElement
             walkDirection = walkX > 0 ? -1 : 1;
             walkX = Math.Abs(walkX) <= speed ? 0 : walkX + walkDirection * speed;
         }
+        UpdateArmTimer();
         InvalidateVisual();
+    }
+
+    DispatcherTimer? armTimer;
+    internal bool ArmAnimationRunning => armTimer?.IsEnabled == true;
+    bool AnimatesArm => IsLoaded && IsVisible && sheet.SideWalkFrames != null && (mood == Mood.Working || walkX != 0) &&
+        !arriving && transition == null && SystemParameters.ClientAreaAnimation;
+
+    void UpdateArmTimer()
+    {
+        if (!AnimatesArm) { armTimer?.Stop(); armTimer = null; return; }
+        if (armTimer != null) return;
+        armTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromSeconds(1.0 / 30) };
+        armTimer.Tick += (_, _) =>
+        {
+            if (!AnimatesArm) { UpdateArmTimer(); return; }
+            InvalidateVisual();
+        };
+        armTimer.Start();
     }
 
     // MARK: Drawing
@@ -1535,12 +1583,13 @@ sealed class PetView : FrameworkElement
         if (lift > 0) DrawShadow(dc, rect, sheet.Size, 14, lift);
         var pixels = sheet.Pixels[frame];
         var source = sheet.Frames[frame];
-        if (walking && SystemParameters.ClientAreaAnimation && sheet.SideWalkFrames != null && sheet.SideWalkPixels != null)
+        if (walking && sheet.SideWalkFrames != null && sheet.SideWalkPixels != null)
         {
-            source = sheet.SideWalkFrames[step];
-            pixels = sheet.SideWalkPixels[step];
+            int index = SpriteMotion.ArmIndex(step, Environment.TickCount64 / 1000.0, !SystemParameters.ClientAreaAnimation);
+            source = sheet.SideWalkFrames[index];
+            pixels = sheet.SideWalkPixels[index];
         }
-        var image = flash ? SpriteSheet.Tinted(pixels, sheet.Size, Look.HitRed, 0.85) : source;
+        var image = flash ? SpriteSheet.Tinted(pixels, source.PixelWidth, Look.HitRed, 0.85) : source;
         DrawSprite(dc, image, rect, mirrored);
         DrawShinyBurst(dc, lift);
 

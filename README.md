@@ -277,9 +277,10 @@ Charmander and Squirtle use forward-facing walking poses from
 front frames. These are Chunsoft's Mystery Dungeon sprites, with shiny recolours
 by ShyStarryRain and SilverDeoxys563, used under the project's
 [non-commercial credit policy](https://github.com/PMDCollab/SpriteCollab#submission-and-use-policy).
-Their existing side and back poses are unchanged. Golurk has a subtle forearm
-swing during sideways walking, using the same cadence as its footsteps. Its elbow
-is slightly thicker, and the chest stays still.
+Their existing side and back poses are unchanged. Golurk has a subtle whole-arm
+swing during sideways walking: the upper arm, thicker elbow and fist rotate
+together around the shoulder. The chest stays still. Cached intermediate poses
+refresh at 30 fps while walking; reduced motion uses the resting arm pose.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a
 trademark of Anthropic. This is a fan project, not affiliated with or endorsed

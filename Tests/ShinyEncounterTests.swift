@@ -3,6 +3,8 @@ import AppKit
 @main
 struct ShinyEncounterTests {
     @MainActor static func main() {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
         PetView.recordsActivity = false
         let suite = "claude-pet-tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -89,42 +91,75 @@ struct ShinyEncounterTests {
             check(pixels(SpriteSheet.named(name)!.frames[0]) != pixels(SpriteSheet.named(name, shiny: true)!.frames[0]),
                   "Replacement fronts must support shiny colours: \(name)")
         }
+        check(SpriteSheet.armSwingIndex(step: 1, time: 0.25) == 17, "Arm motion advances through intermediate poses")
+        check(SpriteSheet.armSwingIndex(step: 1, time: 0.75, reducedMotion: true) == 1, "Reduced motion keeps a resting arm")
+        for phase in 0..<SpriteSheet.armSwingPhases {
+            check(abs(SpriteSheet.armSwingAngle(phase: phase + 1) - SpriteSheet.armSwingAngle(phase: phase)) < 0.021,
+                  "Adjacent poses change by less than 1.2 degrees, including the loop seam")
+        }
         for shiny in [false, true] {
             let golurk = SpriteSheet.named("golurk", shiny: shiny)!
-            check(golurk.sideWalkFrames?.count == 2, "Golurk has two arm-swing poses for each palette")
+            let poses = golurk.sideWalkFrames!
+            check(poses.count == 64 && poses.allSatisfy { $0.width == 128 && $0.height == 128 }, "Both leg poses have a full shoulder-swing cycle")
+            let rendered = poses.map(pixels)
+            func differs(_ a: Data, _ b: Data, x: Range<Int>, y: Range<Int>) -> Bool {
+                y.contains { row in x.contains { column in
+                    let offset = (row * 128 + column) * 4
+                    return a[offset..<offset + 4] != b[offset..<offset + 4]
+                } }
+            }
+            check(differs(rendered[16], rendered[48], x: 72..<96, y: 52..<76), "The upper arm rotates along with the hand")
+            check(differs(rendered[16], rendered[48], x: 48..<100, y: 80..<120), "The patterned gauntlet follows the same shoulder rotation")
+            for phase in 0..<SpriteSheet.armSwingPhases {
+                for step in 0..<2 {
+                    let current = rendered[phase * 2 + step], resting = rendered[step]
+                    check(!differs(current, resting, x: 40..<64, y: 48..<72), "The chest stays fixed throughout the entire cycle")
+                    check(!differs(current, resting, x: 0..<128, y: 0..<40), "The head stays fixed")
+                    check(!differs(current, resting, x: 0..<128, y: 120..<128), "The feet stay fixed for each leg pose")
+                    let pivot = (50 * 128 + 86) * 4
+                    check(current[pivot..<pivot + 4] == resting[pivot..<pivot + 4], "The shoulder pivot remains attached")
+                }
+            }
             let pet = PetView(agent: Agent(pane: "golurk-arm-hitbox-test", status: "working", title: "", project: "test"),
                               pokemon: "golurk", sheet: golurk)
             pet.setMood(.working)
             for direction: CGFloat in [-1, 1] {
                 pet.walkDirection = direction
-                for image in golurk.sideWalkFrames! {
-                    let box = SpriteSheet.visibleBox(of: image)
+                for image in poses {
+                    let pixels = SpriteSheet.visibleBox(of: image)
+                    let box = CGRect(x: pixels.minX / 4, y: pixels.minY / 4, width: pixels.width / 4, height: pixels.height / 4)
                     let left = direction > 0 ? 32 - box.maxX : box.minX
                     let visible = NSRect(x: pet.homeX + left * PetView.scale, y: PetView.spriteTop + box.minY * PetView.scale,
                                          width: box.width * PetView.scale, height: box.height * PetView.scale)
-                    check(pet.hitBox.contains(visible), "The swinging hand remains clickable in both walking directions")
-                }
-            }
-            for i in 0..<2 {
-                let original = pixels(golurk.frames[4 + i])
-                let swinging = pixels(golurk.sideWalkFrames![i])
-                check(original != swinging, "Golurk's arm moves in both walk poses")
-                func pixel(_ data: Data, _ x: Int, _ y: Int) -> Data { data[(y * 32 + x) * 4..<(y * 32 + x + 1) * 4] }
-                let direction = i == 0 ? -1 : 1
-                check(pixel(swinging, 17 + direction * 2, 23) == pixel(original, 17, 23),
-                      "The patterned fist moves two pixels with the forearm")
-                check(pixel(swinging, 20, 19) == pixel(original, 19, 19) && pixel(swinging, 21, 19) == pixel(original, 20, 19),
-                      "The elbow gains a filled pixel and retains its dark outline")
-                check(pixel(swinging, 11, 16) == pixel(original, 11, 16), "The gold chest detail never pulses")
-                for y in 0..<32 {
-                    for x in 0..<32 where !(12..<24).contains(x) || !(19..<29).contains(y) {
-                        let offset = (y * 32 + x) * 4
-                        check(original[offset..<offset + 4] == swinging[offset..<offset + 4],
-                              "Golurk's chest, head and feet stay unchanged outside the actual arm")
-                    }
+                    check(pet.hitBox.contains(visible), "The whole rotating arm remains clickable in both directions")
                 }
             }
         }
+        let moving = PetView(agent: Agent(pane: "golurk-repaint-test", status: "working", title: "", project: "test"),
+                             pokemon: "golurk", sheet: SpriteSheet.named("golurk")!)
+        moving.setMood(.working)
+        let host = NSWindow(contentRect: moving.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        host.isReleasedWhenClosed = false
+        host.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        host.contentView = moving
+        check(!moving.armAnimationRunning, "A hidden pet does not start the faster clock")
+        host.orderFront(nil)
+        moving.fitSize()
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let tick = moving.tick
+            RunLoop.current.run(until: Date().addingTimeInterval(0.09))
+            check(moving.armAnimationRunning && moving.tick == tick, "The arm clock runs independently of slower walking ticks")
+            moving.setMood(.idle)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.09))
+            check(!moving.armAnimationRunning, "The faster clock stops when Golurk stops walking")
+            moving.setMood(.working)
+            moving.fitSize()
+            host.orderOut(nil)
+            moving.animate()
+            check(!moving.armAnimationRunning, "Hiding the pet stops its faster clock")
+        }
+        host.contentView = nil
+        host.close()
         var paletteChecks = 0
         for name in roster {
             guard let normal = SpriteSheet.named(name), let shiny = SpriteSheet.named(name, shiny: true) else {

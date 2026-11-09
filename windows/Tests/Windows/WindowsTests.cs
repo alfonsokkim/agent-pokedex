@@ -65,28 +65,43 @@ static class WindowsTests
             foreach (bool shiny in new[] { false, true })
             {
                 var golurk = SpriteSheet.Named("golurk", shiny)!;
-                Check(golurk.SideWalkFrames?.Length == 2 && golurk.SideWalkPixels?.Length == 2, "Golurk has two arm-swing poses for each palette");
-                for (int frame = 0; frame < 2; frame++)
+                var poses = golurk.SideWalkFrames!;
+                var rendered = golurk.SideWalkPixels!;
+                Check(poses.Length == 64 && rendered.Length == 64 && poses.All(p => p.PixelWidth == 128), "Both leg poses have a full shoulder-swing cycle");
+                bool Differs(byte[] a, byte[] b, int left, int top, int right, int bottom)
                 {
-                    var original = golurk.Pixels[4 + frame];
-                    var swinging = golurk.SideWalkPixels![frame];
-                    Check(!original.SequenceEqual(swinging), "Golurk's arm moves in both walk poses");
-                    bool SamePixel(int targetX, int targetY, int sourceX, int sourceY) =>
-                        swinging.AsSpan((targetY * 32 + targetX) * 4, 4).SequenceEqual(original.AsSpan((sourceY * 32 + sourceX) * 4, 4));
-                    int direction = frame == 0 ? -1 : 1;
-                    Check(SamePixel(17 + direction * 2, 23, 17, 23), "The patterned fist moves two pixels with the forearm");
-                    Check(SamePixel(20, 19, 19, 19) && SamePixel(21, 19, 20, 19), "The elbow gains a filled pixel and retains its dark outline");
-                    Check(SamePixel(11, 16, 11, 16), "The gold chest detail never pulses");
-                    for (int y = 0; y < 32; y++)
-                        for (int x = 0; x < 32; x++)
-                            if (x < 12 || x >= 24 || y < 19 || y >= 29)
-                            {
-                                int offset = (y * 32 + x) * 4;
-                                if (!original.AsSpan(offset, 4).SequenceEqual(swinging.AsSpan(offset, 4)))
-                                    throw new Exception("Golurk's chest, head and feet stay unchanged outside the actual arm");
-                            }
+                    for (int y = top; y < bottom; y++)
+                        for (int x = left; x < right; x++)
+                            if (!a.AsSpan((y * 128 + x) * 4, 4).SequenceEqual(b.AsSpan((y * 128 + x) * 4, 4))) return true;
+                    return false;
                 }
+                Check(Differs(rendered[16], rendered[48], 72, 52, 96, 76), "The upper arm rotates along with the hand");
+                Check(Differs(rendered[16], rendered[48], 48, 80, 100, 120), "The patterned gauntlet follows the shoulder rotation");
+                for (int phase = 0; phase < SpriteMotion.ArmSwingPhases; phase++)
+                    for (int step = 0; step < 2; step++)
+                    {
+                        var current = rendered[phase * 2 + step]; var resting = rendered[step];
+                        Check(!Differs(current, resting, 40, 48, 64, 72), "The chest stays fixed throughout the entire cycle");
+                        Check(!Differs(current, resting, 0, 0, 128, 40), "The head stays fixed");
+                        Check(!Differs(current, resting, 0, 120, 128, 128), "The feet stay fixed for each leg pose");
+                        Check(current.AsSpan((50 * 128 + 86) * 4, 4).SequenceEqual(resting.AsSpan((50 * 128 + 86) * 4, 4)), "The shoulder pivot remains attached");
+                    }
             }
+            var walkingAgent = new Agent("test:shoulder-clock", "working", "", "test");
+            var walkingPet = new PetView(walkingAgent, "golurk", SpriteSheet.Named("golurk")!);
+            walkingPet.Update(walkingAgent);
+            Check(!walkingPet.ArmAnimationRunning, "A hidden pet does not start the faster clock");
+            var walkingWindow = new PetWindow(walkingPet) { Left = -32000, Top = -32000, ShowActivated = false };
+            try
+            {
+                walkingWindow.Show();
+                walkingPet.Animate();
+                Check(walkingPet.ArmAnimationRunning == SystemParameters.ClientAreaAnimation, "A visible walking pet starts its clock unless motion is reduced");
+                walkingWindow.Hide();
+                walkingPet.Animate();
+                Check(!walkingPet.ArmAnimationRunning, "Hiding the pet stops its faster clock");
+            }
+            finally { walkingWindow.Content = null; walkingWindow.Close(); }
             var allPicker = new PickerWindow("gengar", new HashSet<string>(), _ => { });
             Check(allPicker.VisiblePokemon.Length == 649 && allPicker.GenerationSelector.SelectedIndex == 0,
                 "The default picker opens all Pokemon directly");
@@ -353,7 +368,7 @@ static class WindowsTests
                 Save(sparkleFrame, Path.Combine(args[0], "windows-shiny-hover.png"));
                 var golurk = SpriteSheet.Named("golurk")!;
                 var swingPreview = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Background = Brushes.White };
-                foreach (var frame in golurk.SideWalkFrames!)
+                foreach (var frame in new[] { golurk.SideWalkFrames![16], golurk.SideWalkFrames![48] })
                 {
                     var arm = new System.Windows.Controls.Image { Source = frame, Width = 192, Height = 192 };
                     RenderOptions.SetBitmapScalingMode(arm, BitmapScalingMode.NearestNeighbor);

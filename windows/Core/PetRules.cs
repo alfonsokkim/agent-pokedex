@@ -167,32 +167,30 @@ sealed class ShinyHoverBurst
 
 static class SpriteMotion
 {
-    // The right-hand patterned gauntlet swings below a fixed, thicker elbow.
-    // The gold detail on the left belongs to the chest and must stay still.
-    public static byte[] GolurkArmSwing(byte[] source, int size, int direction)
+    public const int ArmSwingPhases = 32;
+    public static double ArmAngle(int phase) => Math.Sin(phase * 2 * Math.PI / ArmSwingPhases) * 6;
+    public static int ArmIndex(int step, double time, bool reducedMotion = false) =>
+        (reducedMotion ? 0 : (int)((time - Math.Floor(time)) * ArmSwingPhases)) * 2 + step;
+
+    // Isolate the whole right-hand arm, including its shoulder cap and gauntlet.
+    public static (byte[] Body, byte[] Arm) GolurkArmLayers(byte[] source, int size)
     {
-        var result = source.ToArray();
-        if (size != 32 || source.Length != 32 * 32 * 4 || (direction != -1 && direction != 1)) return result;
-        Buffer.BlockCopy(source, (19 * 32 + 19) * 4, result, (19 * 32 + 20) * 4, 4);
-        Buffer.BlockCopy(source, (19 * 32 + 20) * 4, result, (19 * 32 + 21) * 4, 4);
-        int[] left = { 16, 15, 15, 14, 14, 14, 14, 15, 16 };
-        int[] right = { 21, 21, 21, 21, 21, 21, 21, 20, 19 };
+        var body = source.ToArray();
+        var arm = new byte[source.Length];
+        if (size != 32 || source.Length != 32 * 32 * 4) return (body, arm);
+        int[] left = { 20, 20, 19, 19, 19, 18, 18, 18, 16, 15, 15, 14, 14, 14, 14, 15, 16 };
+        int[] right = { 22, 22, 22, 22, 22, 22, 21, 21, 21, 21, 21, 21, 21, 21, 21, 20, 19 };
         for (int row = 0; row < left.Length; row++)
             for (int x = left[row]; x <= right[row]; x++)
             {
-                // Preserve the shared torso or rear-leg outline under the arm.
-                if (row < 7 && x == left[row]) continue;
-                Array.Clear(result, ((row + 20) * 32 + x) * 4, 4);
+                int y = row + 12, index = (y * 32 + x) * 4;
+                // The narrow elbow gains one filled pixel and a new outer edge.
+                int sourceIndex = y == 19 && x >= 20 ? (y * 32 + x - 1) * 4 : index;
+                Buffer.BlockCopy(source, sourceIndex, arm, index, 4);
+                if (row < 15 && x == left[row]) continue;
+                Array.Clear(body, index, 4);
             }
-        for (int row = 0; row < left.Length; row++)
-            for (int x = left[row]; x <= right[row]; x++)
-            {
-                int y = row + 20, index = (y * 32 + x) * 4;
-                if (source[index + 3] == 0) continue;
-                int shift = direction * (y < 23 ? 1 : 2);
-                Buffer.BlockCopy(source, index, result, (y * 32 + x + shift) * 4, 4);
-            }
-        return result;
+        return (body, arm);
     }
 }
 
