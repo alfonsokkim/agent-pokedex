@@ -27,7 +27,7 @@ struct PickerSearchTests {
         check(picker.grid.names.count == 151, "A generation choice initially shows its region")
         check(picker.grid.current == "gengar" && picker.grid.taken == ["pikachu"], "Search preserves current and in-use markers")
         picker.grid.setHovered(picker.grid.names.firstIndex(of: "pikachu"))
-        check(picker.grid.toolTip?.contains("swaps") == true, "An in-use marker explains the swap")
+        check(picker.grid.toolTip?.contains("swaps") == true, "An in-use preview explains the swap")
         func search(_ text: String) {
             picker.searchField.stringValue = text
             picker.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: picker.searchField))
@@ -73,9 +73,20 @@ struct PickerSearchTests {
         let available = preview(taken: [])
         let assigned = preview(taken: ["regirock"])
         let scale = assigned.pixelsWide / Int(available.size.width)
-        check((16 * scale..<58 * scale).allSatisfy { x in
-            (16 * scale..<60 * scale).allSatisfy { y in assigned.colorAt(x: x, y: y) == available.colorAt(x: x, y: y) }
-        }, "Assigned sprites must render at the same full opacity as available sprites")
+        var visiblePixels = 0
+        var fadedPixels = 0
+        for x in 16 * scale..<58 * scale {
+            for y in 16 * scale..<60 * scale {
+                let original = available.colorAt(x: x, y: y)!
+                if original.alphaComponent > 0.5 {
+                    visiblePixels += 1
+                    if abs(assigned.colorAt(x: x, y: y)!.alphaComponent - original.alphaComponent * 0.4) < 0.02 {
+                        fadedPixels += 1
+                    }
+                }
+            }
+        }
+        check(visiblePixels > 0 && fadedPixels == visiblePixels, "Assigned sprites retain their in-use fade")
         try? assigned.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/pokemon-picker-preview.png"))
         print("Passed \(checks) Pokémon picker search checks.")
     }

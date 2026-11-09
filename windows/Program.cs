@@ -2037,7 +2037,7 @@ sealed class ThrowWindow : Window
 }
 
 /// Every Pokemon in a grid to pick from. The current one is highlighted, ones
-/// other agents have carry a dot (picking one swaps), and the hovered one walks in place.
+/// other agents have are faded (picking one swaps), and the hovered one walks in place.
 sealed class PickerWindow : Window
 {
     bool closing;
@@ -2134,19 +2134,14 @@ sealed class PickerWindow : Window
             {
                 var sheet = SpriteSheet.Named(name)!;
                 bool inUse = taken.Contains(name);
-                var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64 };
+                var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64, Opacity = inUse ? 0.4 : 1 };
                 RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
                 var label = new TextBlock { Text = Roster.Display(name), FontSize = 11,
                     HorizontalAlignment = HorizontalAlignment.Center, Foreground = inUse ? Brushes.Gray : Brushes.Black };
-                var content = new Grid();
-                content.Children.Add(new StackPanel { Children = { image, label } });
-                if (inUse) content.Children.Add(new TextBlock { Text = "•", FontSize = 14, Foreground = Brushes.Gray,
-                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
-                    Margin = new Thickness(0, 0, 4, 0), IsHitTestVisible = false });
                 var cell = new Border { Width = 76, Height = 90, Margin = new Thickness(2), CornerRadius = new CornerRadius(6),
                     Background = name == current ? highlight : Brushes.Transparent, Cursor = Cursors.Hand,
                     ToolTip = inUse ? "Used by another agent. Choosing it swaps the two Pokemon." : null,
-                    Child = content };
+                    Child = new StackPanel { Children = { image, label } } };
                 cell.MouseEnter += (_, _) =>
                 {
                     if (name != current) cell.Background = hover;

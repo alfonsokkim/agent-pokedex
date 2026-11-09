@@ -125,8 +125,8 @@ Codex chats are found automatically through their local thread state.
     Use the generation tabs along the top to switch regions. The search bar above the grid filters all five generations as
     you type, matching any part of a name without regard to case. Clearing search
     restores the selected generation; choosing a region clears the search. The
-    ones other sessions have show a small dot, and picking one swaps the two.
-    All previews keep their full colour and crisp pixel edges.
+    ones other sessions have are greyed out, and picking one swaps the two.
+    All previews keep crisp pixel edges, including the faded ones.
   - **Return to Poke Ball**: put a pet away by hand and dismiss its current
     "is done" message. If it is still working, it stays in the ball until that
     work finishes or needs attention, then comes back out. A pet returned after

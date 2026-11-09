@@ -2568,7 +2568,7 @@ final class PokemonPickerView: NSView, NSSearchFieldDelegate {
 }
 
 /// Every Pokémon as its sprite in the picker grid. The
-/// current one is highlighted, ones other agents have carry a dot (picking one
+/// current one is highlighted, ones other agents have are faded (picking one
 /// swaps), and the hovered one walks in place.
 final class PokemonGrid: NSView {
     static let columns = 8
@@ -2688,11 +2688,7 @@ final class PokemonGrid: NSView {
                                 y: cell.minY + 31 - box.midY * previewScale,
                                 width: size, height: size)
             let inUse = taken.contains(name)
-            drawPixelSprite(frame, in: sprite, nearest: true)
-            if inUse {
-                NSColor.secondaryLabelColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: cell.maxX - 8, y: cell.minY + 4, width: 4, height: 4)).fill()
-            }
+            drawPixelSprite(frame, in: sprite, alpha: inUse ? 0.4 : 1, nearest: true)
 
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,

@@ -273,11 +273,12 @@ static class WindowsTests
                 }
             }
             var previews = Descendants<System.Windows.Controls.Image>(picker).ToArray();
-            Check(previews.Length == 649 && previews.All(image => image.Opacity == 1 &&
-                RenderOptions.GetBitmapScalingMode(image) == BitmapScalingMode.NearestNeighbor),
-                "All previews, including assigned Pokemon, retain full opacity and sharp pixels");
+            Check(previews.Length == 649 && previews.Count(image => image.Opacity == 0.4) == 2 &&
+                previews.Count(image => image.Opacity == 1) == 647 &&
+                previews.All(image => RenderOptions.GetBitmapScalingMode(image) == BitmapScalingMode.NearestNeighbor),
+                "Assigned Pokemon are faded while all previews retain sharp pixels");
             Check(Descendants<System.Windows.Controls.Border>(picker).Count(cell => cell.ToolTip is string tip && tip.Contains("swaps")) == 2,
-                "Assigned previews explain their in-use marker");
+                "Assigned previews explain the swap");
             foreach (System.Windows.Controls.TabItem tab in picker.GenerationSelector.Items)
             {
                 var origin = tab.TranslatePoint(new Point(0, 0), picker.GenerationSelector);
