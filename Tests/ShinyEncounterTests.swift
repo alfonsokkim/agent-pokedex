@@ -3,6 +3,7 @@ import AppKit
 @main
 struct ShinyEncounterTests {
     @MainActor static func main() {
+        PetView.recordsActivity = false
         let suite = "claude-pet-tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -91,15 +92,35 @@ struct ShinyEncounterTests {
         for shiny in [false, true] {
             let golurk = SpriteSheet.named("golurk", shiny: shiny)!
             check(golurk.sideWalkFrames?.count == 2, "Golurk has two arm-swing poses for each palette")
+            let pet = PetView(agent: Agent(pane: "golurk-arm-hitbox-test", status: "working", title: "", project: "test"),
+                              pokemon: "golurk", sheet: golurk)
+            pet.setMood(.working)
+            for direction: CGFloat in [-1, 1] {
+                pet.walkDirection = direction
+                for image in golurk.sideWalkFrames! {
+                    let box = SpriteSheet.visibleBox(of: image)
+                    let left = direction > 0 ? 32 - box.maxX : box.minX
+                    let visible = NSRect(x: pet.homeX + left * PetView.scale, y: PetView.spriteTop + box.minY * PetView.scale,
+                                         width: box.width * PetView.scale, height: box.height * PetView.scale)
+                    check(pet.hitBox.contains(visible), "The swinging hand remains clickable in both walking directions")
+                }
+            }
             for i in 0..<2 {
                 let original = pixels(golurk.frames[4 + i])
                 let swinging = pixels(golurk.sideWalkFrames![i])
                 check(original != swinging, "Golurk's arm moves in both walk poses")
+                func pixel(_ data: Data, _ x: Int, _ y: Int) -> Data { data[(y * 32 + x) * 4..<(y * 32 + x + 1) * 4] }
+                let direction = i == 0 ? -1 : 1
+                check(pixel(swinging, 17 + direction * 2, 23) == pixel(original, 17, 23),
+                      "The patterned fist moves two pixels with the forearm")
+                check(pixel(swinging, 20, 19) == pixel(original, 19, 19) && pixel(swinging, 21, 19) == pixel(original, 20, 19),
+                      "The elbow gains a filled pixel and retains its dark outline")
+                check(pixel(swinging, 11, 16) == pixel(original, 11, 16), "The gold chest detail never pulses")
                 for y in 0..<32 {
-                    for x in 0..<32 where !(9..<15).contains(x) || !(12..<19).contains(y) {
+                    for x in 0..<32 where !(12..<24).contains(x) || !(19..<29).contains(y) {
                         let offset = (y * 32 + x) * 4
                         check(original[offset..<offset + 4] == swinging[offset..<offset + 4],
-                              "Golurk's head, torso and feet stay unchanged outside the arm")
+                              "Golurk's chest, head and feet stay unchanged outside the actual arm")
                     }
                 }
             }

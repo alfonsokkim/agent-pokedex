@@ -167,19 +167,29 @@ sealed class ShinyHoverBurst
 
 static class SpriteMotion
 {
-    // The side-view shoulder stays anchored; only the forearm moves one pixel.
+    // The right-hand patterned gauntlet swings below a fixed, thicker elbow.
+    // The gold detail on the left belongs to the chest and must stay still.
     public static byte[] GolurkArmSwing(byte[] source, int size, int direction)
     {
         var result = source.ToArray();
         if (size != 32 || source.Length != 32 * 32 * 4 || (direction != -1 && direction != 1)) return result;
-        for (int y = 12; y < 19; y++)
-            for (int x = 10; x < 14; x++) Array.Clear(result, (y * 32 + x) * 4, 4);
-        for (int y = 12; y < 19; y++)
-            for (int x = 10; x < 14; x++)
+        Buffer.BlockCopy(source, (19 * 32 + 19) * 4, result, (19 * 32 + 20) * 4, 4);
+        Buffer.BlockCopy(source, (19 * 32 + 20) * 4, result, (19 * 32 + 21) * 4, 4);
+        int[] left = { 16, 15, 15, 14, 14, 14, 14, 15, 16 };
+        int[] right = { 21, 21, 21, 21, 21, 21, 21, 20, 19 };
+        for (int row = 0; row < left.Length; row++)
+            for (int x = left[row]; x <= right[row]; x++)
             {
-                int index = (y * 32 + x) * 4;
+                // Preserve the shared torso or rear-leg outline under the arm.
+                if (row < 7 && x == left[row]) continue;
+                Array.Clear(result, ((row + 20) * 32 + x) * 4, 4);
+            }
+        for (int row = 0; row < left.Length; row++)
+            for (int x = left[row]; x <= right[row]; x++)
+            {
+                int y = row + 20, index = (y * 32 + x) * 4;
                 if (source[index + 3] == 0) continue;
-                int shift = y < 15 ? 0 : direction;
+                int shift = direction * (y < 23 ? 1 : 2);
                 Buffer.BlockCopy(source, index, result, (y * 32 + x + shift) * 4, 4);
             }
         return result;

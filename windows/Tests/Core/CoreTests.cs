@@ -58,12 +58,12 @@ Check(burst.Start == 12, "A later hover can replay a finished burst");
 burst.Reset();
 Check(burst.Start == null, "Recall or species changes clear the burst");
 var armPixels = new byte[32 * 32 * 4];
-armPixels[(13 * 32 + 12) * 4 + 3] = 255;
-armPixels[(17 * 32 + 12) * 4 + 3] = 255;
+armPixels[(13 * 32 + 21) * 4 + 3] = 255;
+armPixels[(23 * 32 + 17) * 4 + 3] = 255;
 var swing = SpriteMotion.GolurkArmSwing(armPixels, 32, 1);
-Check(swing[(13 * 32 + 12) * 4 + 3] == 255 && swing[(17 * 32 + 13) * 4 + 3] == 255 &&
-    swing[(17 * 32 + 12) * 4 + 3] == 0 && armPixels[(17 * 32 + 12) * 4 + 3] == 255,
-    "Golurk's shoulder stays fixed while its forearm swings without mutating the source");
+Check(swing[(13 * 32 + 21) * 4 + 3] == 255 && swing[(23 * 32 + 19) * 4 + 3] == 255 &&
+    swing[(23 * 32 + 17) * 4 + 3] == 0 && armPixels[(23 * 32 + 17) * 4 + 3] == 255,
+    "Golurk's shoulder stays fixed while its patterned fist swings without mutating the source");
 var palette = SpritePalette.Parse("JASC-PAL\r\n0100\r\n1\r\n12 234 56\r\n");
 Check(palette[0] == new Rgb(12, 234, 56), "Palette channels");
 Check(SpriteIndices.At(new byte[] { 0x01, 0x20 }, 2, 4, 2, 0) == 2, "Packed palette indices are decoded without colour matching");

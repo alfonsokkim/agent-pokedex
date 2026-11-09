@@ -278,7 +278,8 @@ front frames. These are Chunsoft's Mystery Dungeon sprites, with shiny recolours
 by ShyStarryRain and SilverDeoxys563, used under the project's
 [non-commercial credit policy](https://github.com/PMDCollab/SpriteCollab#submission-and-use-policy).
 Their existing side and back poses are unchanged. Golurk has a subtle forearm
-swing during sideways walking, using the same cadence as its footsteps.
+swing during sideways walking, using the same cadence as its footsteps. Its elbow
+is slightly thicker, and the chest stays still.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a
 trademark of Anthropic. This is a fan project, not affiliated with or endorsed

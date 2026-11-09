@@ -71,13 +71,19 @@ static class WindowsTests
                     var original = golurk.Pixels[4 + frame];
                     var swinging = golurk.SideWalkPixels![frame];
                     Check(!original.SequenceEqual(swinging), "Golurk's arm moves in both walk poses");
+                    bool SamePixel(int targetX, int targetY, int sourceX, int sourceY) =>
+                        swinging.AsSpan((targetY * 32 + targetX) * 4, 4).SequenceEqual(original.AsSpan((sourceY * 32 + sourceX) * 4, 4));
+                    int direction = frame == 0 ? -1 : 1;
+                    Check(SamePixel(17 + direction * 2, 23, 17, 23), "The patterned fist moves two pixels with the forearm");
+                    Check(SamePixel(20, 19, 19, 19) && SamePixel(21, 19, 20, 19), "The elbow gains a filled pixel and retains its dark outline");
+                    Check(SamePixel(11, 16, 11, 16), "The gold chest detail never pulses");
                     for (int y = 0; y < 32; y++)
                         for (int x = 0; x < 32; x++)
-                            if (x < 9 || x >= 15 || y < 12 || y >= 19)
+                            if (x < 12 || x >= 24 || y < 19 || y >= 29)
                             {
                                 int offset = (y * 32 + x) * 4;
                                 if (!original.AsSpan(offset, 4).SequenceEqual(swinging.AsSpan(offset, 4)))
-                                    throw new Exception("Golurk's head, torso and feet stay unchanged outside the arm");
+                                    throw new Exception("Golurk's chest, head and feet stay unchanged outside the actual arm");
                             }
                 }
             }

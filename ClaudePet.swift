@@ -139,6 +139,7 @@ struct SpriteSheet {
     /// to bottommost, in pixels from the frame's top-left corner.
     let boxes: [CGRect]
     var sideWalkFrames: [CGImage]? = nil
+    var sideWalkBounds: CGRect? = nil
 
     static let directory = NSHomeDirectory() + "/.local/share/claude-pet/sprites"
     static var cache: [String: SpriteSheet] = [:]
@@ -166,6 +167,7 @@ struct SpriteSheet {
                                 halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
         if name == "golurk" {
             sheet.sideWalkFrames = [armSwing(frames[4], direction: -1), armSwing(frames[5], direction: 1)]
+            sheet.sideWalkBounds = sheet.sideWalkFrames?.map(visibleBox).reduce(CGRect.null) { $0.union($1) }
         }
         cache[key] = sheet
         return sheet
@@ -275,8 +277,9 @@ struct SpriteSheet {
         return image
     }
 
-    /// Golurk's side-view forearm swings one pixel around its fixed shoulder.
-    /// Keep every source colour exact, including the shiny palette.
+    /// Golurk's visible arm is on the right, ending in the patterned gauntlet.
+    /// Its elbow stays anchored and gains a pixel of width; the wrist and fist
+    /// swing below it. The gold detail on the left belongs to the chest.
     static func armSwing(_ image: CGImage, direction: Int) -> CGImage {
         guard image.width == 32, image.height == 32, direction == -1 || direction == 1,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -285,15 +288,26 @@ struct SpriteSheet {
         context.draw(image, in: CGRect(x: 0, y: 0, width: 32, height: 32))
         guard let input = context.data?.assumingMemoryBound(to: UInt8.self) else { return image }
         var bytes = Array(UnsafeBufferPointer(start: input, count: 32 * 32 * 4))
-        for y in 12..<19 {
-            for x in 10..<14 {
-                let index = (y * 32 + x) * 4
-                for channel in 0..<4 { bytes[index + channel] = 0 }
+        // The elbow narrows to three pixels on row 19. Extend its fill and
+        // outline one pixel to keep it connected to the heavy forearm.
+        for channel in 0..<4 {
+            bytes[(19 * 32 + 20) * 4 + channel] = input[(19 * 32 + 19) * 4 + channel]
+            bytes[(19 * 32 + 21) * 4 + channel] = input[(19 * 32 + 20) * 4 + channel]
+        }
+        let left = [16, 15, 15, 14, 14, 14, 14, 15, 16]
+        let right = [21, 21, 21, 21, 21, 21, 21, 20, 19]
+        for row in left.indices {
+            let y = row + 20
+            for x in left[row]...right[row] {
+                // The shared black edge also outlines the torso or rear leg.
+                if row < 7 && x == left[row] { continue }
+                for channel in 0..<4 { bytes[(y * 32 + x) * 4 + channel] = 0 }
             }
         }
-        for y in 12..<19 {
-            let shift = y < 15 ? 0 : direction
-            for x in 10..<14 {
+        for row in left.indices {
+            let y = row + 20
+            let shift = direction * (y < 23 ? 1 : 2)
+            for x in left[row]...right[row] {
                 let source = (y * 32 + x) * 4
                 guard input[source + 3] > 0 else { continue }
                 let target = (y * 32 + x + shift) * 4
@@ -2223,7 +2237,8 @@ final class PetView: NSView {
     var hitBox: NSRect {
         let (frames, mirrored) = pose
         let width = CGFloat(sheet.frames[0].width)
-        let box = frames.map { sheet.boxes[$0] }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
+        var box = frames.map { sheet.boxes[$0] }.filter { !$0.isEmpty }.reduce(CGRect.null) { $0.union($1) }
+        if frames.first == 4, let armBounds = sheet.sideWalkBounds { box = box.union(armBounds) }
         guard !box.isNull else { return .zero }
         let left = mirrored ? width - box.maxX : box.minX
         return NSRect(x: homeX + walkX + left * Self.scale, y: Self.spriteTop + box.minY * Self.scale,
