@@ -37,10 +37,13 @@ static class WindowsTests
             }
             foreach (var name in new[] { "charmander", "squirtle" })
             {
-                var fronts = SpriteSheet.Load(Path.Combine(Paths.Sprites, "front", name + ".png"), 2, frameSize: 32)!;
-                Check(fronts.Frames.Length == 2, $"Two vertical front poses: {name}");
                 foreach (bool shiny in new[] { false, true })
                 {
+                    var fronts = SpriteSheet.Load(Path.Combine(Paths.Sprites, "front", name + (shiny ? "_shiny.png" : "_normal.png")), 32, frameSize: 32)!;
+                    Check(fronts.Frames.Length == 32, $"Eight directions of four walking poses: {name}, {shiny}");
+                    Check(Enumerable.Range(0, 32 * 32).Count(p => fronts.Pixels[0][p * 4] == 0 && fronts.Pixels[0][p * 4 + 1] == 0 &&
+                        fronts.Pixels[0][p * 4 + 2] == 0 && fronts.Pixels[0][p * 4 + 3] == 255) > 10,
+                        "Transparent PNGs retain their opaque black outlines and pupils");
                     string palettePath = Path.Combine(Paths.Sprites, "palettes", name + (shiny ? "_shiny.pal" : "_normal.pal"));
                     var original = SpriteSheet.Load(Path.Combine(Paths.Sprites, name + ".png"), 6, palettePath)!;
                     var updated = SpriteSheet.Named(name, shiny)!;
@@ -58,6 +61,25 @@ static class WindowsTests
                     }
                 }
                 Check(!SpriteSheet.Named(name)!.Pixels[0].SequenceEqual(SpriteSheet.Named(name, true)!.Pixels[0]), $"Front supports shiny colours: {name}");
+            }
+            foreach (bool shiny in new[] { false, true })
+            {
+                var golurk = SpriteSheet.Named("golurk", shiny)!;
+                Check(golurk.SideWalkFrames?.Length == 2 && golurk.SideWalkPixels?.Length == 2, "Golurk has two arm-swing poses for each palette");
+                for (int frame = 0; frame < 2; frame++)
+                {
+                    var original = golurk.Pixels[4 + frame];
+                    var swinging = golurk.SideWalkPixels![frame];
+                    Check(!original.SequenceEqual(swinging), "Golurk's arm moves in both walk poses");
+                    for (int y = 0; y < 32; y++)
+                        for (int x = 0; x < 32; x++)
+                            if (x < 9 || x >= 15 || y < 12 || y >= 19)
+                            {
+                                int offset = (y * 32 + x) * 4;
+                                if (!original.AsSpan(offset, 4).SequenceEqual(swinging.AsSpan(offset, 4)))
+                                    throw new Exception("Golurk's head, torso and feet stay unchanged outside the arm");
+                            }
+                }
             }
             var allPicker = new PickerWindow("gengar", new HashSet<string>(), _ => { });
             Check(allPicker.VisiblePokemon.Length == 649 && allPicker.GenerationSelector.SelectedIndex == 0,
@@ -323,6 +345,15 @@ static class WindowsTests
                 gengar.Update(agent);
                 Save(Render(gengar, (int)gengar.Width, (int)gengar.Height), Path.Combine(args[0], "windows-attention-context-caption.png"));
                 Save(sparkleFrame, Path.Combine(args[0], "windows-shiny-hover.png"));
+                var golurk = SpriteSheet.Named("golurk")!;
+                var swingPreview = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Background = Brushes.White };
+                foreach (var frame in golurk.SideWalkFrames!)
+                {
+                    var arm = new System.Windows.Controls.Image { Source = frame, Width = 192, Height = 192 };
+                    RenderOptions.SetBitmapScalingMode(arm, BitmapScalingMode.NearestNeighbor);
+                    swingPreview.Children.Add(arm);
+                }
+                Save(Render(swingPreview, 384, 192), Path.Combine(args[0], "windows-golurk-arm-swing.png"));
             }
             Console.WriteLine($"Passed {checks} native Windows checks, including all 1,298 sprite variants.");
             return 0;

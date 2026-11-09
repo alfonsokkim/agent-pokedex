@@ -272,8 +272,13 @@ project, and the Poke Ball is FireRed's item ball from
 Game Freak's art, so they aren't included in this repo: the installers
 download them, for personal use. Both apps use the project's separate normal
 and shiny overworld palettes, sharing the same walking frames for both variants.
-Charmander and Squirtle use the same project's clearer icon artwork for their
-two front poses, with matching shiny colours. Their side and back poses are unchanged.
+Charmander and Squirtle use forward-facing walking poses from
+[PMDCollab's SpriteCollab](https://github.com/PMDCollab/SpriteCollab) for their two
+front frames. These are Chunsoft's Mystery Dungeon sprites, with shiny recolours
+by ShyStarryRain and SilverDeoxys563, used under the project's
+[non-commercial credit policy](https://github.com/PMDCollab/SpriteCollab#submission-and-use-policy).
+Their existing side and back poses are unchanged. Golurk has a subtle forearm
+swing during sideways walking, using the same cadence as its footsteps.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a
 trademark of Anthropic. This is a fan project, not affiliated with or endorsed

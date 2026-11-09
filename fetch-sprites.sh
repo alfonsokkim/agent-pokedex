@@ -7,6 +7,7 @@ set -e
 dir="$HOME/.local/share/claude-pet/sprites"
 catalog="$HOME/.local/share/claude-pet/pokemon.json"
 base=https://raw.githubusercontent.com/rh-hideout/pokeemerald-expansion/master/graphics/pokemon
+front_base=https://raw.githubusercontent.com/PMDCollab/SpriteCollab/e56caec3fda47cbd4b9d2177b3d1bc05f0ff7dc7/sprite
 mkdir -p "$dir"
 mkdir -p "$dir/palettes" "$dir/front"
 
@@ -40,10 +41,16 @@ while IFS= read -r name; do
   done
 done < "$names_tmp"
 
-for name in charmander squirtle; do
-  if [[ ! -s "$dir/front/$name.png" ]]; then
-    printf '%s\n%s\n' "$base/$name/icon.png" "$dir/front/$name.png" >> "$jobs_tmp"
-  fi
+for pair in charmander:0004 squirtle:0007; do
+  name=${pair%%:*}
+  number=${pair#*:}
+  for variant in normal shiny; do
+    source="$front_base/$number"
+    [[ "$variant" == shiny ]] && source="$source/0000/0001"
+    if [[ ! -s "$dir/front/${name}_${variant}.png" ]]; then
+      printf '%s\n%s\n' "$source/Walk-Anim.png" "$dir/front/${name}_${variant}.png" >> "$jobs_tmp"
+    fi
+  done
 done
 
 if [[ -s "$jobs_tmp" ]]; then
@@ -81,10 +88,12 @@ while IFS= read -r name; do
   done
 done < "$names_tmp"
 for name in charmander squirtle; do
-  if [[ ! -s "$dir/front/$name.png" ]]; then
-    echo "missing: $name front sprite" >&2
-    ((missing += 1))
-  fi
+  for variant in normal shiny; do
+    if [[ ! -s "$dir/front/${name}_${variant}.png" ]]; then
+      echo "missing: $name $variant front sprite" >&2
+      ((missing += 1))
+    fi
+  done
 done
 [[ "$missing" -eq 0 ]] || { echo "$missing Pokémon sprites could not be downloaded." >&2; exit 1; }
 echo "649 Gen I to V sprite sheets with normal and shiny palettes ready in $dir"

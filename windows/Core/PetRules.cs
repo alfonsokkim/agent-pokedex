@@ -165,6 +165,27 @@ sealed class ShinyHoverBurst
     }
 }
 
+static class SpriteMotion
+{
+    // The side-view shoulder stays anchored; only the forearm moves one pixel.
+    public static byte[] GolurkArmSwing(byte[] source, int size, int direction)
+    {
+        var result = source.ToArray();
+        if (size != 32 || source.Length != 32 * 32 * 4 || (direction != -1 && direction != 1)) return result;
+        for (int y = 12; y < 19; y++)
+            for (int x = 10; x < 14; x++) Array.Clear(result, (y * 32 + x) * 4, 4);
+        for (int y = 12; y < 19; y++)
+            for (int x = 10; x < 14; x++)
+            {
+                int index = (y * 32 + x) * 4;
+                if (source[index + 3] == 0) continue;
+                int shift = y < 15 ? 0 : direction;
+                Buffer.BlockCopy(source, index, result, (y * 32 + x + shift) * 4, 4);
+            }
+        return result;
+    }
+}
+
 static class SpriteIndices
 {
     public static int At(byte[] pixels, int stride, int bits, int x, int y) =>
@@ -173,23 +194,6 @@ static class SpriteIndices
 
 static class SpritePalette
 {
-    public static Rgb[] FrontColors(Rgb[] source, Rgb[] normal, Rgb[] variant)
-    {
-        if (normal.Length < 2 || normal.Length != variant.Length) throw new InvalidDataException("Mismatched front palettes.");
-        var result = source.ToArray();
-        for (int i = 1; i < source.Length; i++)
-        {
-            int Distance(int index)
-            {
-                int r = source[i].R - normal[index].R, g = source[i].G - normal[index].G, b = source[i].B - normal[index].B;
-                return r * r + g * g + b * b;
-            }
-            int nearest = Enumerable.Range(1, normal.Length - 1).MinBy(Distance);
-            if (normal[nearest] != variant[nearest]) result[i] = variant[nearest];
-        }
-        return result;
-    }
-
     public static Rgb[] Parse(string text)
     {
         var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);

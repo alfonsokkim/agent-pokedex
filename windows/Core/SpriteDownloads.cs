@@ -11,6 +11,7 @@ namespace ClaudePet;
 static class SpriteDownloads
 {
     public const string Base = "https://raw.githubusercontent.com/rh-hideout/pokeemerald-expansion/master/graphics/pokemon";
+    const string FrontBase = "https://raw.githubusercontent.com/PMDCollab/SpriteCollab/e56caec3fda47cbd4b9d2177b3d1bc05f0ff7dc7/sprite";
     public const string Ball = "https://raw.githubusercontent.com/pret/pokefirered/master/graphics/object_events/pics/misc/item_ball.png";
     static bool Valid(string name, byte[] bytes)
     {
@@ -36,8 +37,12 @@ static class SpriteDownloads
             foreach (var variant in new[] { "normal", "shiny" })
                 jobs.Add((Path.Combine("palettes", name + "_" + variant + ".pal"), $"{Base}/{name}/overworld_{variant}.pal"));
         }
-        foreach (var name in new[] { "charmander", "squirtle" })
-            jobs.Add((Path.Combine("front", name + ".png"), $"{Base}/{name}/icon.png"));
+        foreach (var (name, number) in new[] { ("charmander", "0004"), ("squirtle", "0007") })
+            foreach (var variant in new[] { "normal", "shiny" })
+            {
+                string folder = variant == "shiny" ? number + "/0000/0001" : number;
+                jobs.Add((Path.Combine("front", name + "_" + variant + ".png"), $"{FrontBase}/{folder}/Walk-Anim.png"));
+            }
         jobs.Add(("_pokeball.png", Ball));
         int missing = 0;
         await Parallel.ForEachAsync(jobs, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (job, cancellation) =>

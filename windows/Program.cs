@@ -248,6 +248,8 @@ sealed class SpriteSheet
     public readonly int Top;
     /// The farthest any frame reaches from its centre column, for spacing pets in a row.
     public readonly int HalfWidth;
+    public BitmapSource[]? SideWalkFrames { get; private set; }
+    public byte[][]? SideWalkPixels { get; private set; }
 
     SpriteSheet(BitmapSource[] frames, byte[][] pixels, int size, int top, int halfWidth)
     {
@@ -268,25 +270,27 @@ sealed class SpriteSheet
             string palettePath = Path.Combine(Paths.Sprites, "palettes", name + (shiny ? "_shiny.pal" : "_normal.pal"));
             if (!File.Exists(palettePath)) return null;
             sheet = Load(Path.Combine(Paths.Sprites, name + ".png"), minimumFrames: 6, palettePath);
-            if (sheet != null && (name is "charmander" or "squirtle")) sheet = ApplyFronts(sheet, name, palettePath);
+            if (sheet != null && (name is "charmander" or "squirtle")) sheet = ApplyFronts(sheet, name, shiny);
+            if (sheet != null && name == "golurk")
+            {
+                sheet.SideWalkPixels = new[] { SpriteMotion.GolurkArmSwing(sheet.Pixels[4], sheet.Size, -1),
+                    SpriteMotion.GolurkArmSwing(sheet.Pixels[5], sheet.Size, 1) };
+                sheet.SideWalkFrames = sheet.SideWalkPixels.Select(pixels => Bitmap(pixels, sheet.Size)).ToArray();
+            }
             if (sheet != null) cache[key] = sheet;
         }
         return sheet;
     }
 
-    static SpriteSheet ApplyFronts(SpriteSheet original, string name, string palettePath)
+    static SpriteSheet ApplyFronts(SpriteSheet original, string name, bool shiny)
     {
-        string path = Path.Combine(Paths.Sprites, "front", name + ".png");
+        string path = Path.Combine(Paths.Sprites, "front", name + (shiny ? "_shiny.png" : "_normal.png"));
         if (!File.Exists(path)) return original;
         try
         {
-            var source = BitmapDecoder.Create(new Uri(path), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
-            if (source.Palette == null) return original;
-            var colours = SpritePalette.FrontColors(source.Palette.Colors.Select(c => new Rgb(c.R, c.G, c.B)).ToArray(),
-                SpritePalette.Parse(File.ReadAllText(Path.Combine(Paths.Sprites, "palettes", name + "_normal.pal"))),
-                SpritePalette.Parse(File.ReadAllText(palettePath)));
-            var front = Load(path, 2, frameSize: original.Size, paletteOverride: colours);
-            if (front == null || front.Frames.Length != 2) return original;
+            // PMD's first row faces the viewer. Only replace the two front poses.
+            var front = Load(path, 32, frameSize: original.Size);
+            if (front == null || front.Frames.Length != 32) return original;
             int size = original.Size;
             int Bottom(byte[] frame)
             {
@@ -324,7 +328,7 @@ sealed class SpriteSheet
     public static readonly SpriteSheet? Pokeball = Load(Path.Combine(Paths.Sprites, "_pokeball.png"), minimumFrames: 1);
 
     /// Decodes square frames and makes the background (palette entry 0) transparent.
-    internal static SpriteSheet? Load(string path, int minimumFrames, string? palettePath = null, int? frameSize = null, Rgb[]? paletteOverride = null)
+    internal static SpriteSheet? Load(string path, int minimumFrames, string? palettePath = null, int? frameSize = null)
     {
         if (!File.Exists(path)) return null;
         try
@@ -338,9 +342,9 @@ sealed class SpriteSheet
                 indices = new byte[indexedStride * source.PixelHeight];
                 source.CopyPixels(indices, indexedStride, 0);
             }
-            if (palettePath != null || paletteOverride != null)
+            if (palettePath != null)
             {
-                var colours = paletteOverride ?? SpritePalette.Parse(File.ReadAllText(palettePath!));
+                var colours = SpritePalette.Parse(File.ReadAllText(palettePath));
                 if (indices == null) return null;
                 source = BitmapSource.Create(source.PixelWidth, source.PixelHeight, source.DpiX, source.DpiY,
                     source.Format, new BitmapPalette(colours.Select(c => Color.FromRgb(c.R, c.G, c.B)).ToList()), indices, indexedStride);
@@ -350,6 +354,7 @@ sealed class SpriteSheet
             var all = new byte[w * h * 4];
             bgra.CopyPixels(all, w * 4, 0);
 
+            bool hasTransparency = Enumerable.Range(0, w * h).Any(i => all[i * 4 + 3] < 255);
             var key = source.Palette is { Colors.Count: > 0 } palette
                 ? palette.Colors[0]
                 : Color.FromRgb(all[2], all[1], all[0]); // no palette: the top-left pixel
@@ -357,7 +362,7 @@ sealed class SpriteSheet
             {
                 int pixel = i / 4;
                 bool background = indices != null ? SpriteIndices.At(indices, indexedStride, bits, pixel % w, pixel / w) == 0 :
-                    Math.Abs(all[i] - key.B) < 3 && Math.Abs(all[i + 1] - key.G) < 3 && Math.Abs(all[i + 2] - key.R) < 3;
+                    !hasTransparency && Math.Abs(all[i] - key.B) < 3 && Math.Abs(all[i + 1] - key.G) < 3 && Math.Abs(all[i + 2] - key.R) < 3;
                 if (background)
                     all[i] = all[i + 1] = all[i + 2] = all[i + 3] = 0;
             }
@@ -1528,7 +1533,14 @@ sealed class PetView : FrameworkElement
         var rect = new Rect(Snap(HomeX + walkX), Snap(Look.SpriteTop - lift), SpriteSize, SpriteSize);
         // Only a pet off the ground casts a shadow.
         if (lift > 0) DrawShadow(dc, rect, sheet.Size, 14, lift);
-        var image = flash ? SpriteSheet.Tinted(sheet.Pixels[frame], sheet.Size, Look.HitRed, 0.85) : sheet.Frames[frame];
+        var pixels = sheet.Pixels[frame];
+        var source = sheet.Frames[frame];
+        if (walking && SystemParameters.ClientAreaAnimation && sheet.SideWalkFrames != null && sheet.SideWalkPixels != null)
+        {
+            source = sheet.SideWalkFrames[step];
+            pixels = sheet.SideWalkPixels[step];
+        }
+        var image = flash ? SpriteSheet.Tinted(pixels, sheet.Size, Look.HitRed, 0.85) : source;
         DrawSprite(dc, image, rect, mirrored);
         DrawShinyBurst(dc, lift);
 

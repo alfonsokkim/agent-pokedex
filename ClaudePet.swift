@@ -103,43 +103,6 @@ enum SpritePalette {
         }
         return colors
     }
-
-    static func colors(inPNG path: String) -> [UInt8]? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
-        let bytes = [UInt8](data)
-        var offset = 8
-        while offset + 12 <= bytes.count {
-            let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
-            guard length <= bytes.count - offset - 12 else { return nil }
-            if String(bytes: bytes[offset + 4..<offset + 8], encoding: .ascii) == "PLTE" {
-                guard (3...768).contains(length), length.isMultiple(of: 3) else { return nil }
-                return Array(bytes[offset + 8..<offset + 8 + length])
-            }
-            offset += length + 12
-        }
-        return nil
-    }
-
-    static func frontColors(_ source: [UInt8], normal: [UInt8], variant: [UInt8]) -> [UInt8]? {
-        guard normal.count == variant.count, normal.count >= 6, normal.count.isMultiple(of: 3),
-              !source.isEmpty, source.count.isMultiple(of: 3) else { return nil }
-        var result = source
-        for index in stride(from: 3, to: source.count, by: 3) {
-            let nearest = stride(from: 3, to: normal.count, by: 3).min { a, b in
-                func distance(_ target: Int) -> Int {
-                    (0..<3).reduce(0) { total, channel in
-                        let delta = Int(source[index + channel]) - Int(normal[target + channel])
-                        return total + delta * delta
-                    }
-                }
-                return distance(a) < distance(b)
-            }!
-            if normal[nearest..<nearest + 3] != variant[nearest..<nearest + 3] {
-                for channel in 0..<3 { result[index + channel] = variant[nearest + channel] }
-            }
-        }
-        return result
-    }
 }
 
 /// One roll per appearance, saved so app restarts do not reroll a visible pet.
@@ -175,6 +138,7 @@ struct SpriteSheet {
     /// Each frame's visible pixels, from its leftmost to rightmost and topmost
     /// to bottommost, in pixels from the frame's top-left corner.
     let boxes: [CGRect]
+    var sideWalkFrames: [CGImage]? = nil
 
     static let directory = NSHomeDirectory() + "/.local/share/claude-pet/sprites"
     static var cache: [String: SpriteSheet] = [:]
@@ -186,11 +150,10 @@ struct SpriteSheet {
         guard let palette = SpritePalette.colors(in: palettePath),
               var frames = frames(in: "\(directory)/\(name).png", palette: palette), frames.count >= 6 else { return nil }
         if ["charmander", "squirtle"].contains(name) {
-            let frontPath = "\(directory)/front/\(name).png"
-            if let source = SpritePalette.colors(inPNG: frontPath),
-               let normal = SpritePalette.colors(in: "\(directory)/palettes/\(name)_normal.pal"),
-               let colors = SpritePalette.frontColors(source, normal: normal, variant: palette),
-               let replacements = Self.frames(in: frontPath, palette: colors, frameSize: frames[0].width), replacements.count == 2 {
+            let frontPath = "\(directory)/front/\(name)_\(shiny ? "shiny" : "normal").png"
+            // PMD's first row faces down toward the viewer. Use its first two
+            // walking poses and leave all existing side and back frames alone.
+            if let replacements = Self.frames(in: frontPath, frameSize: frames[0].width), replacements.count == 32 {
                 for i in 0..<2 { frames[i] = alignedFront(replacements[i], to: frames[i]) }
             }
         }
@@ -199,8 +162,11 @@ struct SpriteSheet {
             let half = frame.width / 2
             return box.isEmpty ? (frame.height, 0) : (Int(box.minY), max(half - Int(box.minX), Int(box.maxX) - half))
         }
-        let sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
+        var sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
                                 halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
+        if name == "golurk" {
+            sheet.sideWalkFrames = [armSwing(frames[4], direction: -1), armSwing(frames[5], direction: 1)]
+        }
         cache[key] = sheet
         return sheet
     }
@@ -307,6 +273,38 @@ struct SpriteSheet {
                   space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return original }
         return image
+    }
+
+    /// Golurk's side-view forearm swings one pixel around its fixed shoulder.
+    /// Keep every source colour exact, including the shiny palette.
+    static func armSwing(_ image: CGImage, direction: Int) -> CGImage {
+        guard image.width == 32, image.height == 32, direction == -1 || direction == 1,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8,
+                  bytesPerRow: 128, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: 32, height: 32))
+        guard let input = context.data?.assumingMemoryBound(to: UInt8.self) else { return image }
+        var bytes = Array(UnsafeBufferPointer(start: input, count: 32 * 32 * 4))
+        for y in 12..<19 {
+            for x in 10..<14 {
+                let index = (y * 32 + x) * 4
+                for channel in 0..<4 { bytes[index + channel] = 0 }
+            }
+        }
+        for y in 12..<19 {
+            let shift = y < 15 ? 0 : direction
+            for x in 10..<14 {
+                let source = (y * 32 + x) * 4
+                guard input[source + 3] > 0 else { continue }
+                let target = (y * 32 + x + shift) * 4
+                for channel in 0..<4 { bytes[target + channel] = input[source + channel] }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let result = CGImage(width: 32, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 128,
+                  space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return image }
+        return result
     }
 
     /// The first PLTE entry, which Gen 3 graphics treat as transparent.
@@ -1859,6 +1857,9 @@ final class PetView: NSView {
             } else {
                 image = frames[4 + step]
                 mirrored = right
+            }
+            if let sideWalk = sheet.sideWalkFrames, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                image = sideWalk[step]
             }
         } else if spinning {
             // Turn on the ground through front, side, back, and the other side.

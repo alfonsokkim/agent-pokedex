@@ -66,15 +66,10 @@ struct ShinyEncounterTests {
             return Data(bytes: context.data!, count: image.width * image.height * 4)
         }
         for name in ["charmander", "squirtle"] {
-            let path = "\(SpriteSheet.directory)/front/\(name).png"
-            let sourcePalette = SpritePalette.colors(inPNG: path)!
-            let normalPalette = SpritePalette.colors(in: "\(SpriteSheet.directory)/palettes/\(name)_normal.pal")!
-            check(SpritePalette.frontColors(sourcePalette, normal: normalPalette, variant: normalPalette) == sourcePalette,
-                  "Normal front artwork keeps its exact original colours: \(name)")
-            let fronts = SpriteSheet.frames(in: path, frameSize: 32)!
-            check(fronts.count == 2, "Both vertically stacked front poses must decode: \(name)")
             for shiny in [false, true] {
                 let variant = shiny ? "shiny" : "normal"
+                let fronts = SpriteSheet.frames(in: "\(SpriteSheet.directory)/front/\(name)_\(variant).png", frameSize: 32)!
+                check(fronts.count == 32, "The source contains eight directions of four walking poses: \(name), \(variant)")
                 let palette = SpritePalette.colors(in: "\(SpriteSheet.directory)/palettes/\(name)_\(variant).pal")!
                 let original = SpriteSheet.frames(in: "\(SpriteSheet.directory)/\(name).png", palette: palette)!
                 let updated = SpriteSheet.named(name, shiny: shiny)!
@@ -92,6 +87,22 @@ struct ShinyEncounterTests {
             }
             check(pixels(SpriteSheet.named(name)!.frames[0]) != pixels(SpriteSheet.named(name, shiny: true)!.frames[0]),
                   "Replacement fronts must support shiny colours: \(name)")
+        }
+        for shiny in [false, true] {
+            let golurk = SpriteSheet.named("golurk", shiny: shiny)!
+            check(golurk.sideWalkFrames?.count == 2, "Golurk has two arm-swing poses for each palette")
+            for i in 0..<2 {
+                let original = pixels(golurk.frames[4 + i])
+                let swinging = pixels(golurk.sideWalkFrames![i])
+                check(original != swinging, "Golurk's arm moves in both walk poses")
+                for y in 0..<32 {
+                    for x in 0..<32 where !(9..<15).contains(x) || !(12..<19).contains(y) {
+                        let offset = (y * 32 + x) * 4
+                        check(original[offset..<offset + 4] == swinging[offset..<offset + 4],
+                              "Golurk's head, torso and feet stay unchanged outside the arm")
+                    }
+                }
+            }
         }
         var paletteChecks = 0
         for name in roster {
