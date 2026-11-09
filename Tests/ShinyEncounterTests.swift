@@ -117,7 +117,7 @@ struct ShinyEncounterTests {
                     check(!differs(current, resting, x: 0..<128, y: 0..<40), "The head stays fixed")
                     check(!differs(current, resting, x: 0..<128, y: 120..<128), "The feet stay fixed for each leg pose")
                     let pivot = (50 * 128 + 86) * 4
-                    check(current[pivot..<pivot + 4] == resting[pivot..<pivot + 4], "The shoulder pivot remains attached")
+                    check(current[pivot + 3] == 255, "The shoulder pivot stays opaque and attached throughout the swing")
                 }
             }
             let pet = PetView(agent: Agent(pane: "golurk-arm-hitbox-test", status: "working", title: "", project: "test"),

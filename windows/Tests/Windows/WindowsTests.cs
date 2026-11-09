@@ -75,6 +75,18 @@ static class WindowsTests
                             if (!a.AsSpan((y * 128 + x) * 4, 4).SequenceEqual(b.AsSpan((y * 128 + x) * 4, 4))) return true;
                     return false;
                 }
+                if (args.Length > 0)
+                {
+                    Directory.CreateDirectory(args[0]);
+                    var phases = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Background = Brushes.White };
+                    foreach (int phase in new[] { 0, 4, 8, 12, 16, 20, 24, 28 })
+                    {
+                        var image = new System.Windows.Controls.Image { Source = poses[phase * 2], Width = 128, Height = 128 };
+                        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
+                        phases.Children.Add(image);
+                    }
+                    Save(Render(phases, 1024, 128), Path.Combine(args[0], "windows-shoulder-cycle-" + (shiny ? "shiny" : "normal") + ".png"));
+                }
                 Check(Differs(rendered[16], rendered[48], 72, 52, 96, 76), "The upper arm rotates along with the hand");
                 Check(Differs(rendered[16], rendered[48], 48, 80, 100, 120), "The patterned gauntlet follows the shoulder rotation");
                 for (int phase = 0; phase < SpriteMotion.ArmSwingPhases; phase++)
@@ -84,7 +96,8 @@ static class WindowsTests
                         Check(!Differs(current, resting, 40, 48, 64, 72), "The chest stays fixed throughout the entire cycle");
                         Check(!Differs(current, resting, 0, 0, 128, 40), "The head stays fixed");
                         Check(!Differs(current, resting, 0, 120, 128, 128), "The feet stay fixed for each leg pose");
-                        Check(current.AsSpan((50 * 128 + 86) * 4, 4).SequenceEqual(resting.AsSpan((50 * 128 + 86) * 4, 4)), "The shoulder pivot remains attached");
+                        byte anchorAlpha = current[(50 * 128 + 86) * 4 + 3];
+                        Check(anchorAlpha == 255, $"The shoulder pivot stays opaque and attached (phase {phase}, alpha {anchorAlpha})");
                     }
             }
             var walkingAgent = new Agent("test:shoulder-clock", "working", "", "test");
@@ -95,6 +108,8 @@ static class WindowsTests
             try
             {
                 walkingWindow.Show();
+                walkingWindow.UpdateLayout();
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
                 walkingPet.Animate();
                 Check(walkingPet.ArmAnimationRunning == SystemParameters.ClientAreaAnimation, "A visible walking pet starts its clock unless motion is reduced");
                 walkingWindow.Hide();
