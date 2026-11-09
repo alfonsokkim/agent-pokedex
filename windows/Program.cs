@@ -248,8 +248,6 @@ sealed class SpriteSheet
     public readonly int Top;
     /// The farthest any frame reaches from its centre column, for spacing pets in a row.
     public readonly int HalfWidth;
-    public BitmapSource[]? SideWalkFrames { get; private set; }
-    public byte[][]? SideWalkPixels { get; private set; }
 
     SpriteSheet(BitmapSource[] frames, byte[][] pixels, int size, int top, int halfWidth)
     {
@@ -271,18 +269,6 @@ sealed class SpriteSheet
             if (!File.Exists(palettePath)) return null;
             sheet = Load(Path.Combine(Paths.Sprites, name + ".png"), minimumFrames: 6, palettePath);
             if (sheet != null && (name is "charmander" or "squirtle")) sheet = ApplyFronts(sheet, name, shiny);
-            if (sheet != null && name == "golurk")
-            {
-                sheet.SideWalkFrames = Enumerable.Range(0, SpriteMotion.ArmSwingPhases).SelectMany(phase =>
-                    new[] { ArmSwing(sheet.Pixels[4], SpriteMotion.ArmAngle(phase)),
-                        ArmSwing(sheet.Pixels[5], SpriteMotion.ArmAngle(phase)) }).ToArray();
-                sheet.SideWalkPixels = sheet.SideWalkFrames.Select(frame =>
-                {
-                    var pixels = new byte[frame.PixelWidth * frame.PixelHeight * 4];
-                    frame.CopyPixels(pixels, frame.PixelWidth * 4, 0);
-                    return pixels;
-                }).ToArray();
-            }
             if (sheet != null) cache[key] = sheet;
         }
         return sheet;
@@ -402,8 +388,6 @@ sealed class SpriteSheet
             return null;
         }
     }
-
-    static BitmapSource ArmSwing(byte[] source, double angle) => Bitmap(SpriteMotion.GolurkArmPose(source, angle), 128);
 
     public static BitmapSource Bitmap(byte[] px, int size)
     {
@@ -1245,8 +1229,7 @@ sealed class PetView : FrameworkElement
         Width = Look.Width;
         Height = ViewHeight;
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
-        Loaded += (_, _) => { UpdateDpi(VisualTreeHelper.GetDpi(this).DpiScaleX); UpdateArmTimer(); };
-        Unloaded += (_, _) => { armTimer?.Stop(); armTimer = null; };
+        Loaded += (_, _) => UpdateDpi(VisualTreeHelper.GetDpi(this).DpiScaleX);
     }
 
     protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi) => UpdateDpi(newDpi.DpiScaleX);
@@ -1469,26 +1452,7 @@ sealed class PetView : FrameworkElement
             walkDirection = walkX > 0 ? -1 : 1;
             walkX = Math.Abs(walkX) <= speed ? 0 : walkX + walkDirection * speed;
         }
-        UpdateArmTimer();
         InvalidateVisual();
-    }
-
-    DispatcherTimer? armTimer;
-    internal bool ArmAnimationRunning => armTimer?.IsEnabled == true;
-    bool AnimatesArm => IsLoaded && IsVisible && sheet.SideWalkFrames != null && (mood == Mood.Working || walkX != 0) &&
-        !arriving && transition == null && SystemParameters.ClientAreaAnimation;
-
-    void UpdateArmTimer()
-    {
-        if (!AnimatesArm) { armTimer?.Stop(); armTimer = null; return; }
-        if (armTimer != null) return;
-        armTimer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromSeconds(1.0 / 30) };
-        armTimer.Tick += (_, _) =>
-        {
-            if (!AnimatesArm) { UpdateArmTimer(); return; }
-            InvalidateVisual();
-        };
-        armTimer.Start();
     }
 
     // MARK: Drawing
@@ -1561,15 +1525,7 @@ sealed class PetView : FrameworkElement
         var rect = new Rect(Snap(HomeX + walkX), Snap(Look.SpriteTop - lift), SpriteSize, SpriteSize);
         // Only a pet off the ground casts a shadow.
         if (lift > 0) DrawShadow(dc, rect, sheet.Size, 14, lift);
-        var pixels = sheet.Pixels[frame];
-        var source = sheet.Frames[frame];
-        if (walking && sheet.SideWalkFrames != null && sheet.SideWalkPixels != null)
-        {
-            int index = SpriteMotion.ArmIndex(step, Environment.TickCount64 / 1000.0, !SystemParameters.ClientAreaAnimation);
-            source = sheet.SideWalkFrames[index];
-            pixels = sheet.SideWalkPixels[index];
-        }
-        var image = flash ? SpriteSheet.Tinted(pixels, source.PixelWidth, Look.HitRed, 0.85) : source;
+        var image = flash ? SpriteSheet.Tinted(sheet.Pixels[frame], sheet.Size, Look.HitRed, 0.85) : sheet.Frames[frame];
         DrawSprite(dc, image, rect, mirrored);
         DrawShinyBurst(dc, lift);
 
