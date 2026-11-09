@@ -2241,21 +2241,8 @@ final class PetView: NSView {
             menu.addItem(out)
         }
 
-        let choose = NSMenuItem(title: "Pokémon", action: nil, keyEquivalent: "")
-        let choices = NSMenu()
-        choices.autoenablesItems = false
-        let all = NSMenuItem(title: "All Pokémon…", action: #selector(openPokemonPicker(_:)), keyEquivalent: "")
-        all.target = self
-        all.tag = 0
-        choices.addItem(all)
-        choices.addItem(.separator())
-        for (index, generation) in PokemonCatalog.generations.enumerated() {
-            let region = NSMenuItem(title: generation.title, action: #selector(openPokemonPicker(_:)), keyEquivalent: "")
-            region.target = self
-            region.tag = index + 1
-            choices.addItem(region)
-        }
-        choose.submenu = choices
+        let choose = NSMenuItem(title: "Pokémon", action: #selector(openPokemonPicker), keyEquivalent: "")
+        choose.target = self
         menu.addItem(choose)
 
         menu.addItem(.separator())
@@ -2298,9 +2285,9 @@ final class PetView: NSView {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
-    @objc private func openPokemonPicker(_ sender: NSMenuItem) {
+    @objc private func openPokemonPicker() {
         pokemonPickerWindow?.close()
-        let panel = PokemonPickerWindow(current: pokemon, taken: otherPokemon?() ?? [], generation: sender.tag) { [weak self] name in
+        let panel = PokemonPickerWindow(current: pokemon, taken: otherPokemon?() ?? []) { [weak self] name in
             guard let self else { return }
             self.onChoosePokemon?(self, name)
         }

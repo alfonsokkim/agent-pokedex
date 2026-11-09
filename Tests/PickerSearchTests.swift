@@ -17,6 +17,10 @@ struct PickerSearchTests {
         check(PokemonCatalog.matching("mr-mime") == ["mr_mime"], "Catalog names are searchable")
         check(PokemonCatalog.matching("mr_mime") == ["mr_mime"], "Asset names are searchable")
         check(PokemonCatalog.matching("zzzzzz").isEmpty, "No false results for an unmatched query")
+        let allPanel = PokemonPickerWindow(current: "gengar", taken: []) { _ in }
+        check(allPanel.picker.generations.selectedSegment == 0 && allPanel.picker.grid.names.count == 649,
+              "The default picker opens All with generation tabs available")
+        allPanel.close()
         let panel = PokemonPickerWindow(current: "gengar", taken: ["pikachu"], generation: 1) { _ in }
         let picker = panel.picker
         check(panel.canBecomeKey && panel.initialFirstResponder === picker.searchField, "The native picker can accept keyboard focus")

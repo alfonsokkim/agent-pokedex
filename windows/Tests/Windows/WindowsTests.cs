@@ -35,6 +35,11 @@ static class WindowsTests
                     for (int i = 3; i < normal.Pixels[frame].Length; i += 4)
                         if (normal.Pixels[frame][i] != shiny.Pixels[frame][i]) throw new Exception($"Shiny silhouette: {name}");
             }
+            var allPicker = new PickerWindow("gengar", new HashSet<string>(), _ => { });
+            Check(allPicker.VisiblePokemon.Length == 649 && allPicker.GenerationSelector.SelectedIndex == 0,
+                "The default picker opens all Pokemon directly");
+            Check(allPicker.GenerationSelector.Items.Count == 6, "All and five regions remain available as header tabs");
+            allPicker.Close();
             var searchPicker = new PickerWindow("gengar", new HashSet<string> { "pikachu" }, _ => { }, 1, 151);
             Check(searchPicker.VisiblePokemon.Length == 151, "Picker starts in the selected generation");
             searchPicker.SearchField.Text = "ZOR";

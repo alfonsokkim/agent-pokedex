@@ -1809,15 +1809,7 @@ sealed class PetView : FrameworkElement
             foreach (var pet in resting) letOut.Items.Add(Item($"{pet.DisplayName} · {pet.Agent.Label}", pet.Wake));
             menu.Items.Add(letOut);
         }
-        var pokemonMenu = new MenuItem { Header = "Pokemon" };
-        pokemonMenu.Items.Add(Item("All Pokemon…", () => OnPickGeneration?.Invoke(this, 1, 649)));
-        pokemonMenu.Items.Add(new Separator());
-        foreach (var generation in PokemonCatalog.Generations)
-        {
-            var selected = generation;
-            pokemonMenu.Items.Add(Item(selected.Title, () => OnPickGeneration?.Invoke(this, selected.First, selected.Last)));
-        }
-        menu.Items.Add(pokemonMenu);
+        menu.Items.Add(Item("Pokemon", () => OnPickGeneration?.Invoke(this, 1, 649)));
         menu.Items.Add(new Separator());
 
         // Line Up Pets: vertical or horizontal, then a corner. Picking any of
@@ -2000,7 +1992,7 @@ sealed class PickerWindow : Window
 {
     bool closing;
     internal TextBox SearchField { get; } = new();
-    internal ComboBox GenerationSelector { get; } = new();
+    internal TabControl GenerationSelector { get; } = new();
     internal string[] VisiblePokemon { get; private set; } = Array.Empty<string>();
 
     public PickerWindow(string current, ISet<string> taken, Action<string> onPick, int first = 1, int last = 649)
@@ -2046,8 +2038,13 @@ sealed class PickerWindow : Window
         searchRow.Children.Add(searchContainer);
         header.Children.Add(searchRow);
         GenerationSelector.Margin = new Thickness(0, 9, 0, 0);
-        GenerationSelector.Items.Add("All generations");
-        foreach (var generation in PokemonCatalog.Generations) GenerationSelector.Items.Add(generation.Title);
+        GenerationSelector.Height = 30;
+        GenerationSelector.BorderThickness = new Thickness(0);
+        GenerationSelector.Background = Brushes.Transparent;
+        GenerationSelector.Items.Add(new TabItem { Header = "All", Padding = new Thickness(10, 3, 10, 3) });
+        foreach (var generation in PokemonCatalog.Generations)
+            GenerationSelector.Items.Add(new TabItem { Header = generation.Title.Replace("Generation ", ""),
+                Padding = new Thickness(10, 3, 10, 3) });
         int selectedGeneration = Array.FindIndex(PokemonCatalog.Generations, g => g.First == first && g.Last == last) + 1;
         GenerationSelector.SelectedIndex = selectedGeneration;
         System.Windows.Automation.AutomationProperties.SetName(GenerationSelector, "Pokemon generation");
