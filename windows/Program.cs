@@ -403,27 +403,7 @@ sealed class SpriteSheet
         }
     }
 
-    static BitmapSource ArmSwing(byte[] source, double angle)
-    {
-        var (body, arm) = SpriteMotion.GolurkArmLayers(source, 32);
-        var visual = new DrawingVisual();
-        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.NearestNeighbor);
-        RenderOptions.SetEdgeMode(visual, EdgeMode.Aliased);
-        using (var drawing = visual.RenderOpen())
-        {
-            drawing.PushTransform(new ScaleTransform(4, 4));
-            drawing.DrawImage(Bitmap(body, 32), new Rect(0, 0, 32, 32));
-            drawing.PushTransform(new RotateTransform(-angle, 21.5, 12.5));
-            drawing.DrawImage(Bitmap(arm, 32), new Rect(0, 0, 32, 32));
-            drawing.Pop();
-            drawing.Pop();
-        }
-        var image = new RenderTargetBitmap(128, 128, 96, 96, PixelFormats.Pbgra32);
-        image.Render(visual);
-        var result = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
-        result.Freeze();
-        return result;
-    }
+    static BitmapSource ArmSwing(byte[] source, double angle) => Bitmap(SpriteMotion.GolurkArmPose(source, angle), 128);
 
     public static BitmapSource Bitmap(byte[] px, int size)
     {

@@ -65,6 +65,18 @@ Check(armLayer[(13 * 32 + 21) * 4 + 3] == 255 && armLayer[(23 * 32 + 17) * 4 + 3
     armPixels[(23 * 32 + 17) * 4 + 3] == 255, "The whole arm from shoulder to fist is isolated without mutating the source");
 Check(armBody[(16 * 32 + 11) * 4 + 3] == 255 && armLayer[(16 * 32 + 11) * 4 + 3] == 0, "The chest stays on its own fixed layer");
 Check(armLayer[(19 * 32 + 20) * 4 + 3] == 255 && armLayer[(19 * 32 + 21) * 4 + 3] == 255, "The elbow remains thicker");
+armPixels[(16 * 32 + 11) * 4] = 93;
+armPixels[(13 * 32 + 21) * 4 + 1] = 147;
+armPixels[(23 * 32 + 17) * 4 + 2] = 201;
+for (int phase = 0; phase < SpriteMotion.ArmSwingPhases; phase++)
+{
+    var pose = SpriteMotion.GolurkArmPose(armPixels, SpriteMotion.ArmAngle(phase));
+    Check(pose.Length == 128 * 128 * 4 && pose[(64 * 128 + 44) * 4] == 93 && pose[(64 * 128 + 44) * 4 + 3] == 255,
+        "Rotation leaves the chest fixed at its original colour");
+    Check(Enumerable.Range(0, pose.Length / 4).All(p => pose[p * 4 + 3] is 0 or 255 &&
+        pose[p * 4] is 0 or 93 && pose[p * 4 + 1] is 0 or 147 && pose[p * 4 + 2] is 0 or 201),
+        "Nearest-pixel rotation creates no blended colours or softened alpha edges");
+}
 Check(SpriteMotion.ArmIndex(1, 0.25) == 17 && SpriteMotion.ArmIndex(1, 0.75, true) == 1, "Smooth phase selection and reduced motion");
 for (int phase = 0; phase < SpriteMotion.ArmSwingPhases; phase++)
     Check(Math.Abs(SpriteMotion.ArmAngle(phase + 1) - SpriteMotion.ArmAngle(phase)) < 1.2, "Small angle changes across the entire loop");

@@ -172,6 +172,28 @@ static class SpriteMotion
     public static int ArmIndex(int step, double time, bool reducedMotion = false) =>
         (reducedMotion ? 0 : (int)((time - Math.Floor(time)) * ArmSwingPhases)) * 2 + step;
 
+    // Inverse-map the whole rigid arm with nearest-pixel sampling. Native
+    // bitmap rotation filters pixel art even when scaling mode is nearest.
+    public static byte[] GolurkArmPose(byte[] source, double angle)
+    {
+        var (body, arm) = GolurkArmLayers(source, 32);
+        var result = new byte[128 * 128 * 4];
+        double radians = angle * Math.PI / 180, cosine = Math.Cos(radians), sine = Math.Sin(radians);
+        for (int y = 0; y < 128; y++)
+            for (int x = 0; x < 128; x++)
+            {
+                int target = (y * 128 + x) * 4;
+                Buffer.BlockCopy(body, (y / 4 * 32 + x / 4) * 4, result, target, 4);
+                double dx = (x + 0.5) / 4 - 21.5, dy = (y + 0.5) / 4 - 12.5;
+                int sourceX = (int)Math.Floor(21.5 + cosine * dx - sine * dy);
+                int sourceY = (int)Math.Floor(12.5 + sine * dx + cosine * dy);
+                if (sourceX < 0 || sourceX >= 32 || sourceY < 0 || sourceY >= 32) continue;
+                int pixel = (sourceY * 32 + sourceX) * 4;
+                if (arm[pixel + 3] > 0) Buffer.BlockCopy(arm, pixel, result, target, 4);
+            }
+        return result;
+    }
+
     // Isolate the whole right-hand arm, including its shoulder cap and gauntlet.
     public static (byte[] Body, byte[] Arm) GolurkArmLayers(byte[] source, int size)
     {
