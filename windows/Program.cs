@@ -268,16 +268,63 @@ sealed class SpriteSheet
             string palettePath = Path.Combine(Paths.Sprites, "palettes", name + (shiny ? "_shiny.pal" : "_normal.pal"));
             if (!File.Exists(palettePath)) return null;
             sheet = Load(Path.Combine(Paths.Sprites, name + ".png"), minimumFrames: 6, palettePath);
+            if (sheet != null && (name is "charmander" or "squirtle")) sheet = ApplyFronts(sheet, name, palettePath);
             if (sheet != null) cache[key] = sheet;
         }
         return sheet;
     }
 
+    static SpriteSheet ApplyFronts(SpriteSheet original, string name, string palettePath)
+    {
+        string path = Path.Combine(Paths.Sprites, "front", name + ".png");
+        if (!File.Exists(path)) return original;
+        try
+        {
+            var source = BitmapDecoder.Create(new Uri(path), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
+            if (source.Palette == null) return original;
+            var colours = SpritePalette.FrontColors(source.Palette.Colors.Select(c => new Rgb(c.R, c.G, c.B)).ToArray(),
+                SpritePalette.Parse(File.ReadAllText(Path.Combine(Paths.Sprites, "palettes", name + "_normal.pal"))),
+                SpritePalette.Parse(File.ReadAllText(palettePath)));
+            var front = Load(path, 2, frameSize: original.Size, paletteOverride: colours);
+            if (front == null || front.Frames.Length != 2) return original;
+            int size = original.Size;
+            int Bottom(byte[] frame)
+            {
+                for (int y = size - 1; y >= 0; y--)
+                    for (int x = 0; x < size; x++) if (frame[(y * size + x) * 4 + 3] > 0) return y + 1;
+                return 0;
+            }
+            var frames = original.Frames.ToArray();
+            var pixels = original.Pixels.ToArray();
+            for (int i = 0; i < 2; i++)
+            {
+                int shift = Bottom(original.Pixels[i]) - Bottom(front.Pixels[i]);
+                var aligned = new byte[size * size * 4];
+                for (int row = 0; row < size; row++)
+                    if (row + shift >= 0 && row + shift < size)
+                        Buffer.BlockCopy(front.Pixels[i], row * size * 4, aligned, (row + shift) * size * 4, size * 4);
+                pixels[i] = aligned;
+                frames[i] = Bitmap(aligned, size);
+            }
+            int top = size, half = 0;
+            foreach (var frame in pixels)
+                for (int y = 0; y < size; y++)
+                    for (int x = 0; x < size; x++)
+                        if (frame[(y * size + x) * 4 + 3] > 0)
+                        {
+                            top = Math.Min(top, y);
+                            half = Math.Max(half, x < size / 2 ? size / 2 - x : x + 1 - size / 2);
+                        }
+            return new SpriteSheet(frames, pixels, size, top, half);
+        }
+        catch { return original; }
+    }
+
     /// FireRed's overworld item ball (16x16), where pets rest after a long idle.
     public static readonly SpriteSheet? Pokeball = Load(Path.Combine(Paths.Sprites, "_pokeball.png"), minimumFrames: 1);
 
-    /// Decodes a row of square frames and makes the background (palette entry 0) transparent.
-    static SpriteSheet? Load(string path, int minimumFrames, string? palettePath = null)
+    /// Decodes square frames and makes the background (palette entry 0) transparent.
+    internal static SpriteSheet? Load(string path, int minimumFrames, string? palettePath = null, int? frameSize = null, Rgb[]? paletteOverride = null)
     {
         if (!File.Exists(path)) return null;
         try
@@ -291,9 +338,9 @@ sealed class SpriteSheet
                 indices = new byte[indexedStride * source.PixelHeight];
                 source.CopyPixels(indices, indexedStride, 0);
             }
-            if (palettePath != null)
+            if (palettePath != null || paletteOverride != null)
             {
-                var colours = SpritePalette.Parse(File.ReadAllText(palettePath));
+                var colours = paletteOverride ?? SpritePalette.Parse(File.ReadAllText(palettePath!));
                 if (indices == null) return null;
                 source = BitmapSource.Create(source.PixelWidth, source.PixelHeight, source.DpiX, source.DpiY,
                     source.Format, new BitmapPalette(colours.Select(c => Color.FromRgb(c.R, c.G, c.B)).ToList()), indices, indexedStride);
@@ -315,7 +362,9 @@ sealed class SpriteSheet
                     all[i] = all[i + 1] = all[i + 2] = all[i + 3] = 0;
             }
 
-            int size = h, count = w / size;
+            int size = frameSize ?? h;
+            if (size <= 0 || w % size != 0 || h % size != 0) return null;
+            int columns = w / size, count = columns * (h / size);
             if (count < minimumFrames) return null;
             var frames = new BitmapSource[count];
             var pixels = new byte[count][];
@@ -323,7 +372,8 @@ sealed class SpriteSheet
             for (int f = 0; f < count; f++)
             {
                 var px = new byte[size * size * 4];
-                for (int y = 0; y < size; y++) Buffer.BlockCopy(all, (y * w + f * size) * 4, px, y * size * 4, size * 4);
+                int originX = f % columns * size, originY = f / columns * size;
+                for (int y = 0; y < size; y++) Buffer.BlockCopy(all, ((originY + y) * w + originX) * 4, px, y * size * 4, size * 4);
                 pixels[f] = px;
                 frames[f] = Bitmap(px, size);
                 for (int y = 0; y < size; y++)
@@ -1987,7 +2037,7 @@ sealed class ThrowWindow : Window
 }
 
 /// Every Pokemon in a grid to pick from. The current one is highlighted, ones
-/// other agents have are faded (picking one swaps), and the hovered one walks in place.
+/// other agents have carry a dot (picking one swaps), and the hovered one walks in place.
 sealed class PickerWindow : Window
 {
     bool closing;
@@ -2084,13 +2134,19 @@ sealed class PickerWindow : Window
             {
                 var sheet = SpriteSheet.Named(name)!;
                 bool inUse = taken.Contains(name);
-                var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64, Opacity = inUse ? 0.4 : 1 };
+                var image = new Image { Source = sheet.Frames[0], Width = 64, Height = 64 };
                 RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
                 var label = new TextBlock { Text = Roster.Display(name), FontSize = 11,
                     HorizontalAlignment = HorizontalAlignment.Center, Foreground = inUse ? Brushes.Gray : Brushes.Black };
+                var content = new Grid();
+                content.Children.Add(new StackPanel { Children = { image, label } });
+                if (inUse) content.Children.Add(new TextBlock { Text = "•", FontSize = 14, Foreground = Brushes.Gray,
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 0, 4, 0), IsHitTestVisible = false });
                 var cell = new Border { Width = 76, Height = 90, Margin = new Thickness(2), CornerRadius = new CornerRadius(6),
                     Background = name == current ? highlight : Brushes.Transparent, Cursor = Cursors.Hand,
-                    Child = new StackPanel { Children = { image, label } } };
+                    ToolTip = inUse ? "Used by another agent. Choosing it swaps the two Pokemon." : null,
+                    Child = content };
                 cell.MouseEnter += (_, _) =>
                 {
                     if (name != current) cell.Background = hover;

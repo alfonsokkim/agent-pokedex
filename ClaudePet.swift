@@ -103,6 +103,43 @@ enum SpritePalette {
         }
         return colors
     }
+
+    static func colors(inPNG path: String) -> [UInt8]? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+        let bytes = [UInt8](data)
+        var offset = 8
+        while offset + 12 <= bytes.count {
+            let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            guard length <= bytes.count - offset - 12 else { return nil }
+            if String(bytes: bytes[offset + 4..<offset + 8], encoding: .ascii) == "PLTE" {
+                guard (3...768).contains(length), length.isMultiple(of: 3) else { return nil }
+                return Array(bytes[offset + 8..<offset + 8 + length])
+            }
+            offset += length + 12
+        }
+        return nil
+    }
+
+    static func frontColors(_ source: [UInt8], normal: [UInt8], variant: [UInt8]) -> [UInt8]? {
+        guard normal.count == variant.count, normal.count >= 6, normal.count.isMultiple(of: 3),
+              !source.isEmpty, source.count.isMultiple(of: 3) else { return nil }
+        var result = source
+        for index in stride(from: 3, to: source.count, by: 3) {
+            let nearest = stride(from: 3, to: normal.count, by: 3).min { a, b in
+                func distance(_ target: Int) -> Int {
+                    (0..<3).reduce(0) { total, channel in
+                        let delta = Int(source[index + channel]) - Int(normal[target + channel])
+                        return total + delta * delta
+                    }
+                }
+                return distance(a) < distance(b)
+            }!
+            if normal[nearest..<nearest + 3] != variant[nearest..<nearest + 3] {
+                for channel in 0..<3 { result[index + channel] = variant[nearest + channel] }
+            }
+        }
+        return result
+    }
 }
 
 /// One roll per appearance, saved so app restarts do not reroll a visible pet.
@@ -147,7 +184,16 @@ struct SpriteSheet {
         if let cached = cache[key] { return cached }
         let palettePath = "\(directory)/palettes/\(name)_\(shiny ? "shiny" : "normal").pal"
         guard let palette = SpritePalette.colors(in: palettePath),
-              let frames = frames(in: "\(directory)/\(name).png", palette: palette), frames.count >= 6 else { return nil }
+              var frames = frames(in: "\(directory)/\(name).png", palette: palette), frames.count >= 6 else { return nil }
+        if ["charmander", "squirtle"].contains(name) {
+            let frontPath = "\(directory)/front/\(name).png"
+            if let source = SpritePalette.colors(inPNG: frontPath),
+               let normal = SpritePalette.colors(in: "\(directory)/palettes/\(name)_normal.pal"),
+               let colors = SpritePalette.frontColors(source, normal: normal, variant: palette),
+               let replacements = Self.frames(in: frontPath, palette: colors, frameSize: frames[0].width), replacements.count == 2 {
+                for i in 0..<2 { frames[i] = alignedFront(replacements[i], to: frames[i]) }
+            }
+        }
         let boxes = frames.map(visibleBox)
         let extents = zip(frames, boxes).map { frame, box -> (top: Int, halfWidth: Int) in
             let half = frame.width / 2
@@ -182,8 +228,8 @@ struct SpriteSheet {
         return CGRect(x: first, y: top, width: last + 1 - first, height: bottom + 1 - top)
     }
 
-    /// Decodes a row of square frames and makes the background (palette entry 0) transparent.
-    static func frames(in path: String, palette: [UInt8]? = nil) -> [CGImage]? {
+    /// Decodes square frames and makes the background (palette entry 0) transparent.
+    static func frames(in path: String, palette: [UInt8]? = nil, frameSize: Int? = nil) -> [CGImage]? {
         let url = URL(fileURLWithPath: path)
         guard let data = try? Data(contentsOf: url),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -234,10 +280,33 @@ struct SpriteSheet {
         }
 
         guard let keyed = context.makeImage() else { return nil }
-        let size = image.height
-        return (0..<image.width / size).compactMap {
-            keyed.cropping(to: CGRect(x: $0 * size, y: 0, width: size, height: size))
+        let size = frameSize ?? image.height
+        guard size > 0, image.width.isMultiple(of: size), image.height.isMultiple(of: size) else { return nil }
+        return (0..<image.height / size).flatMap { row in
+            (0..<image.width / size).compactMap { column in
+                keyed.cropping(to: CGRect(x: column * size, y: row * size, width: size, height: size))
+            }
         }
+    }
+
+    static func alignedFront(_ replacement: CGImage, to original: CGImage) -> CGImage {
+        let size = original.width
+        guard replacement.width == size, replacement.height == size,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
+                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return original }
+        context.draw(replacement, in: CGRect(x: 0, y: 0, width: size, height: size))
+        guard let input = context.data?.assumingMemoryBound(to: UInt8.self) else { return original }
+        let shift = Int(visibleBox(of: original).maxY - visibleBox(of: replacement).maxY)
+        var bytes = [UInt8](repeating: 0, count: size * size * 4)
+        for row in 0..<size where (0..<size).contains(row + shift) {
+            for column in 0..<size * 4 { bytes[((row + shift) * size * 4) + column] = input[row * size * 4 + column] }
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let image = CGImage(width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: size * 4,
+                  space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return original }
+        return image
     }
 
     /// The first PLTE entry, which Gen 3 graphics treat as transparent.
@@ -279,7 +348,7 @@ private func sharpened(_ image: CGImage, by factor: Int) -> CGImage {
 }
 
 /// Draws a sprite with crisp pixels into a flipped view, optionally mirrored or faded.
-func drawPixelSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool = false, alpha: CGFloat = 1) {
+func drawPixelSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool = false, alpha: CGFloat = 1, nearest: Bool = false) {
     guard let context = NSGraphicsContext.current?.cgContext else { return }
     context.saveGState()
     context.setAlpha(alpha)
@@ -287,7 +356,7 @@ func drawPixelSprite(_ image: CGImage, in rect: NSRect, mirrored: Bool = false, 
     // in between goes through a sharpened copy.
     let device = abs(context.userSpaceToDeviceSpaceTransform.a) * rect.width / CGFloat(image.width)
     var source = image
-    if abs(device - device.rounded()) < 0.01 {
+    if nearest || abs(device - device.rounded()) < 0.01 {
         context.interpolationQuality = .none
     } else {
         source = sharpened(image, by: max(1, Int(device)))
@@ -2499,7 +2568,7 @@ final class PokemonPickerView: NSView, NSSearchFieldDelegate {
 }
 
 /// Every Pokémon as its sprite in the picker grid. The
-/// current one is highlighted, ones other agents have are faded (picking one
+/// current one is highlighted, ones other agents have carry a dot (picking one
 /// swaps), and the hovered one walks in place.
 final class PokemonGrid: NSView {
     static let columns = 8
@@ -2532,6 +2601,7 @@ final class PokemonGrid: NSView {
     func setNames(_ names: [String]) {
         self.names = names.filter { SpriteSheet.named($0) != nil }
         hovered = nil
+        toolTip = nil
         step = 0
         let rows = (self.names.count + Self.columns - 1) / Self.columns
         setFrameSize(NSSize(width: frame.width, height: CGFloat(rows) * Self.cell.height + 2 * Self.padding))
@@ -2578,6 +2648,9 @@ final class PokemonGrid: NSView {
     func setHovered(_ i: Int?) {
         guard i != hovered else { return }
         hovered = i
+        if let i, names.indices.contains(i), taken.contains(names[i]) {
+            toolTip = "Used by another agent. Choosing it swaps the two Pokémon."
+        } else { toolTip = nil }
         step = 0
         needsDisplay = true
     }
@@ -2615,7 +2688,11 @@ final class PokemonGrid: NSView {
                                 y: cell.minY + 31 - box.midY * previewScale,
                                 width: size, height: size)
             let inUse = taken.contains(name)
-            drawPixelSprite(frame, in: sprite, alpha: inUse ? 0.4 : 1)
+            drawPixelSprite(frame, in: sprite, nearest: true)
+            if inUse {
+                NSColor.secondaryLabelColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: cell.maxX - 8, y: cell.minY + 4, width: 4, height: 4)).fill()
+            }
 
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,

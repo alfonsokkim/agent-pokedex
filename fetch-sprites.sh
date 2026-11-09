@@ -8,7 +8,7 @@ dir="$HOME/.local/share/claude-pet/sprites"
 catalog="$HOME/.local/share/claude-pet/pokemon.json"
 base=https://raw.githubusercontent.com/rh-hideout/pokeemerald-expansion/master/graphics/pokemon
 mkdir -p "$dir"
-mkdir -p "$dir/palettes"
+mkdir -p "$dir/palettes" "$dir/front"
 
 catalog_tmp=$(mktemp)
 names_tmp=$(mktemp)
@@ -39,6 +39,12 @@ while IFS= read -r name; do
     fi
   done
 done < "$names_tmp"
+
+for name in charmander squirtle; do
+  if [[ ! -s "$dir/front/$name.png" ]]; then
+    printf '%s\n%s\n' "$base/$name/icon.png" "$dir/front/$name.png" >> "$jobs_tmp"
+  fi
+done
 
 if [[ -s "$jobs_tmp" ]]; then
   echo "Downloading $(($(wc -l < "$jobs_tmp") / 2)) Pokémon sheets and palettes..."
@@ -74,5 +80,11 @@ while IFS= read -r name; do
     fi
   done
 done < "$names_tmp"
+for name in charmander squirtle; do
+  if [[ ! -s "$dir/front/$name.png" ]]; then
+    echo "missing: $name front sprite" >&2
+    ((missing += 1))
+  fi
+done
 [[ "$missing" -eq 0 ]] || { echo "$missing Pokémon sprites could not be downloaded." >&2; exit 1; }
 echo "649 Gen I to V sprite sheets with normal and shiny palettes ready in $dir"

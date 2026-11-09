@@ -26,6 +26,8 @@ struct PickerSearchTests {
         check(panel.canBecomeKey && panel.initialFirstResponder === picker.searchField, "The native picker can accept keyboard focus")
         check(picker.grid.names.count == 151, "A generation choice initially shows its region")
         check(picker.grid.current == "gengar" && picker.grid.taken == ["pikachu"], "Search preserves current and in-use markers")
+        picker.grid.setHovered(picker.grid.names.firstIndex(of: "pikachu"))
+        check(picker.grid.toolTip?.contains("swaps") == true, "An in-use marker explains the swap")
         func search(_ text: String) {
             picker.searchField.stringValue = text
             picker.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: picker.searchField))
@@ -35,6 +37,7 @@ struct PickerSearchTests {
         check(picker.grid.names == ["scizor", "bronzor", "zorua", "zoroark"], "Typing immediately searches all five generations from a regional picker")
         check(picker.generations.selectedSegment == 0, "Search identifies its global scope")
         check(picker.grid.hovered == nil, "Filtering clears a stale hover index")
+        check(picker.grid.toolTip == nil, "Filtering clears a stale in-use tooltip")
         check(picker.scroll.contentView.bounds.origin == .zero, "New results start at the top")
         search("zzzzzz")
         check(picker.grid.names.isEmpty && picker.resultCount.stringValue.hasPrefix("0 Pokémon"), "An unmatched search leaves no stale cells")
@@ -55,6 +58,25 @@ struct PickerSearchTests {
             try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/pokemon-search-preview.png"))
         }
         panel.close()
+        func preview(taken: Set<String>) -> NSBitmapImageRep {
+            let grid = PokemonGrid(names: ["regirock", "regice", "registeel", "groudon", "kyogre", "charmander", "squirtle"],
+                                   current: "", taken: taken, onPick: { _ in })
+            let host = NSWindow(contentRect: grid.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false
+            host.appearance = NSAppearance(named: .aqua)
+            host.contentView = grid
+            let image = grid.bitmapImageRepForCachingDisplay(in: grid.bounds)!
+            grid.cacheDisplay(in: grid.bounds, to: image)
+            host.close()
+            return image
+        }
+        let available = preview(taken: [])
+        let assigned = preview(taken: ["regirock"])
+        let scale = assigned.pixelsWide / Int(available.size.width)
+        check((16 * scale..<58 * scale).allSatisfy { x in
+            (16 * scale..<60 * scale).allSatisfy { y in assigned.colorAt(x: x, y: y) == available.colorAt(x: x, y: y) }
+        }, "Assigned sprites must render at the same full opacity as available sprites")
+        try? assigned.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/pokemon-picker-preview.png"))
         print("Passed \(checks) Pokémon picker search checks.")
     }
 }

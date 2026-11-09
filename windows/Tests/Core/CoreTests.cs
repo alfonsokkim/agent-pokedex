@@ -59,6 +59,12 @@ burst.Reset();
 Check(burst.Start == null, "Recall or species changes clear the burst");
 var palette = SpritePalette.Parse("JASC-PAL\r\n0100\r\n1\r\n12 234 56\r\n");
 Check(palette[0] == new Rgb(12, 234, 56), "Palette channels");
+var front = new[] { new Rgb(0, 0, 0), new Rgb(190, 21, 31), new Rgb(250, 250, 250) };
+var normalFront = new[] { new Rgb(0, 0, 0), new Rgb(200, 20, 30), new Rgb(255, 255, 255) };
+var shinyFront = new[] { normalFront[0], new Rgb(20, 200, 30), normalFront[2] };
+Check(SpritePalette.FrontColors(front, normalFront, normalFront).SequenceEqual(front), "Normal front artwork retains exact colours");
+Check(SpritePalette.FrontColors(front, normalFront, shinyFront).SequenceEqual(new[] { front[0], shinyFront[1], front[2] }),
+    "Shiny fronts recolour the body while preserving background, eyes and highlights");
 Check(SpriteIndices.At(new byte[] { 0x01, 0x20 }, 2, 4, 2, 0) == 2, "Packed palette indices are decoded without colour matching");
 Check(SpriteIndices.At(new byte[] { 0x40 }, 1, 2, 0, 0) == 1, "Two-bit palette index");
 Check(SpriteIndices.At(new byte[] { 0, 15 }, 2, 8, 1, 0) == 15, "Eight-bit palette index");
@@ -202,10 +208,10 @@ try
     var handler = new FakeAssets();
     using var http = new HttpClient(handler);
     string assets = Path.Combine(temporary, "sprites");
-    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 4, "Both palettes, sheet and ball are downloaded");
-    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 4, "Valid assets are not downloaded twice");
+    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 6, "Both palettes, sheet, front overrides and ball are downloaded");
+    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 6, "Valid assets are not downloaded twice");
     File.WriteAllText(Path.Combine(assets, "palettes", "virizion_normal.pal"), "broken");
-    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 5, "Invalid assets are repaired");
+    Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 0 && handler.Calls == 7, "Invalid assets are repaired");
     handler.Fail = true;
     File.Delete(Path.Combine(assets, "virizion.png"));
     Check(await SpriteDownloads.Fetch(http, assets, new[] { "virizion" }) == 1, "Download failure is reported without a partial file");

@@ -35,6 +35,30 @@ static class WindowsTests
                     for (int i = 3; i < normal.Pixels[frame].Length; i += 4)
                         if (normal.Pixels[frame][i] != shiny.Pixels[frame][i]) throw new Exception($"Shiny silhouette: {name}");
             }
+            foreach (var name in new[] { "charmander", "squirtle" })
+            {
+                var fronts = SpriteSheet.Load(Path.Combine(Paths.Sprites, "front", name + ".png"), 2, frameSize: 32)!;
+                Check(fronts.Frames.Length == 2, $"Two vertical front poses: {name}");
+                foreach (bool shiny in new[] { false, true })
+                {
+                    string palettePath = Path.Combine(Paths.Sprites, "palettes", name + (shiny ? "_shiny.pal" : "_normal.pal"));
+                    var original = SpriteSheet.Load(Path.Combine(Paths.Sprites, name + ".png"), 6, palettePath)!;
+                    var updated = SpriteSheet.Named(name, shiny)!;
+                    for (int i = 0; i < original.Pixels.Length; i++)
+                    {
+                        if (i < 2)
+                        {
+                            int Bottom(byte[] frame) => Enumerable.Range(0, frame.Length / 4).Where(p => frame[p * 4 + 3] > 0).Max(p => p / 32);
+                            Check(!original.Pixels[i].SequenceEqual(updated.Pixels[i]), $"Front pose replaced: {name}, {shiny}, {i}");
+                            Check(Bottom(original.Pixels[i]) == Bottom(updated.Pixels[i]), $"Front ground alignment: {name}, {shiny}, {i}");
+                            Check(fronts.Pixels[i].Where((_, p) => p % 4 == 3).Count(a => a > 0) ==
+                                updated.Pixels[i].Where((_, p) => p % 4 == 3).Count(a => a > 0), $"Front art is not clipped: {name}, {shiny}, {i}");
+                        }
+                        else Check(original.Pixels[i].SequenceEqual(updated.Pixels[i]), $"Side and back remain identical: {name}, {shiny}, {i}");
+                    }
+                }
+                Check(!SpriteSheet.Named(name)!.Pixels[0].SequenceEqual(SpriteSheet.Named(name, true)!.Pixels[0]), $"Front supports shiny colours: {name}");
+            }
             var allPicker = new PickerWindow("gengar", new HashSet<string>(), _ => { });
             Check(allPicker.VisiblePokemon.Length == 649 && allPicker.GenerationSelector.SelectedIndex == 0,
                 "The default picker opens all Pokemon directly");
@@ -220,7 +244,7 @@ static class WindowsTests
                 Check(Math.Abs(sizeWindow.ActualHeight - sparkle.Height) < 1, "Species swaps resize the native window");
             }
             finally { sizeWindow.Content = null; sizeWindow.Close(); }
-            var picker = new PickerWindow("gengar", new HashSet<string>(), _ => { }, 494, 649);
+            var picker = new PickerWindow("gengar", new HashSet<string> { "charmander", "regirock" }, _ => { }, 494, 649);
             picker.WindowStartupLocation = WindowStartupLocation.Manual;
             picker.Left = -32000;
             picker.Top = -32000;
@@ -239,6 +263,21 @@ static class WindowsTests
             picker.SearchField.Clear();
             picker.GenerationSelector.SelectedIndex = 0;
             picker.UpdateLayout();
+            IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
+            {
+                for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+                {
+                    var child = VisualTreeHelper.GetChild(root, i);
+                    if (child is T item) yield return item;
+                    foreach (var nested in Descendants<T>(child)) yield return nested;
+                }
+            }
+            var previews = Descendants<System.Windows.Controls.Image>(picker).ToArray();
+            Check(previews.Length == 649 && previews.All(image => image.Opacity == 1 &&
+                RenderOptions.GetBitmapScalingMode(image) == BitmapScalingMode.NearestNeighbor),
+                "All previews, including assigned Pokemon, retain full opacity and sharp pixels");
+            Check(Descendants<System.Windows.Controls.Border>(picker).Count(cell => cell.ToolTip is string tip && tip.Contains("swaps")) == 2,
+                "Assigned previews explain their in-use marker");
             foreach (System.Windows.Controls.TabItem tab in picker.GenerationSelector.Items)
             {
                 var origin = tab.TranslatePoint(new Point(0, 0), picker.GenerationSelector);
@@ -254,6 +293,10 @@ static class WindowsTests
                 var content = (FrameworkElement)picker.Content;
                 var image = new RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth), (int)Math.Ceiling(content.ActualHeight),
                     96, 96, PixelFormats.Pbgra32);
+                var background = new DrawingVisual();
+                using (var drawing = background.RenderOpen())
+                    drawing.DrawRectangle(picker.Background, null, new Rect(0, 0, content.ActualWidth, content.ActualHeight));
+                image.Render(background);
                 image.Render(content);
                 Save(image, Path.Combine(args[0], "windows-pokemon-picker.png"));
             }

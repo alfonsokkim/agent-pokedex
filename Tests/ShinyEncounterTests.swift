@@ -58,6 +58,41 @@ struct ShinyEncounterTests {
             let pixels = context.data!.assumingMemoryBound(to: UInt8.self)
             return (0..<image.width * image.height).map { pixels[$0 * 4 + 3] }
         }
+        func pixels(_ image: CGImage) -> Data {
+            let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                    bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return Data(bytes: context.data!, count: image.width * image.height * 4)
+        }
+        for name in ["charmander", "squirtle"] {
+            let path = "\(SpriteSheet.directory)/front/\(name).png"
+            let sourcePalette = SpritePalette.colors(inPNG: path)!
+            let normalPalette = SpritePalette.colors(in: "\(SpriteSheet.directory)/palettes/\(name)_normal.pal")!
+            check(SpritePalette.frontColors(sourcePalette, normal: normalPalette, variant: normalPalette) == sourcePalette,
+                  "Normal front artwork keeps its exact original colours: \(name)")
+            let fronts = SpriteSheet.frames(in: path, frameSize: 32)!
+            check(fronts.count == 2, "Both vertically stacked front poses must decode: \(name)")
+            for shiny in [false, true] {
+                let variant = shiny ? "shiny" : "normal"
+                let palette = SpritePalette.colors(in: "\(SpriteSheet.directory)/palettes/\(name)_\(variant).pal")!
+                let original = SpriteSheet.frames(in: "\(SpriteSheet.directory)/\(name).png", palette: palette)!
+                let updated = SpriteSheet.named(name, shiny: shiny)!
+                for i in original.indices {
+                    if i < 2 {
+                        check(pixels(original[i]) != pixels(updated.frames[i]), "Front pose must be replaced: \(name), \(variant), \(i)")
+                        check(SpriteSheet.visibleBox(of: original[i]).maxY == updated.boxes[i].maxY,
+                              "Front replacement must retain the ground alignment: \(name), \(variant), \(i)")
+                        check(silhouette(fronts[i]).filter { $0 > 0 }.count == silhouette(updated.frames[i]).filter { $0 > 0 }.count,
+                              "Front alignment must not clip the artwork: \(name), \(variant), \(i)")
+                    } else {
+                        check(pixels(original[i]) == pixels(updated.frames[i]), "Side and back poses must remain identical: \(name), \(variant), \(i)")
+                    }
+                }
+            }
+            check(pixels(SpriteSheet.named(name)!.frames[0]) != pixels(SpriteSheet.named(name, shiny: true)!.frames[0]),
+                  "Replacement fronts must support shiny colours: \(name)")
+        }
         var paletteChecks = 0
         for name in roster {
             guard let normal = SpriteSheet.named(name), let shiny = SpriteSheet.named(name, shiny: true) else {

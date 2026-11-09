@@ -173,6 +173,23 @@ static class SpriteIndices
 
 static class SpritePalette
 {
+    public static Rgb[] FrontColors(Rgb[] source, Rgb[] normal, Rgb[] variant)
+    {
+        if (normal.Length < 2 || normal.Length != variant.Length) throw new InvalidDataException("Mismatched front palettes.");
+        var result = source.ToArray();
+        for (int i = 1; i < source.Length; i++)
+        {
+            int Distance(int index)
+            {
+                int r = source[i].R - normal[index].R, g = source[i].G - normal[index].G, b = source[i].B - normal[index].B;
+                return r * r + g * g + b * b;
+            }
+            int nearest = Enumerable.Range(1, normal.Length - 1).MinBy(Distance);
+            if (normal[nearest] != variant[nearest]) result[i] = variant[nearest];
+        }
+        return result;
+    }
+
     public static Rgb[] Parse(string text)
     {
         var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);

@@ -26,6 +26,7 @@ static class SpriteDownloads
     {
         Directory.CreateDirectory(directory);
         Directory.CreateDirectory(Path.Combine(directory, "palettes"));
+        Directory.CreateDirectory(Path.Combine(directory, "front"));
         var jobs = new List<(string File, string Url)>();
         foreach (var name in names)
         {
@@ -35,6 +36,8 @@ static class SpriteDownloads
             foreach (var variant in new[] { "normal", "shiny" })
                 jobs.Add((Path.Combine("palettes", name + "_" + variant + ".pal"), $"{Base}/{name}/overworld_{variant}.pal"));
         }
+        foreach (var name in new[] { "charmander", "squirtle" })
+            jobs.Add((Path.Combine("front", name + ".png"), $"{Base}/{name}/icon.png"));
         jobs.Add(("_pokeball.png", Ball));
         int missing = 0;
         await Parallel.ForEachAsync(jobs, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (job, cancellation) =>

@@ -125,7 +125,8 @@ Codex chats are found automatically through their local thread state.
     Use the generation tabs along the top to switch regions. The search bar above the grid filters all five generations as
     you type, matching any part of a name without regard to case. Clearing search
     restores the selected generation; choosing a region clears the search. The
-    ones other sessions have are greyed out, and picking one swaps the two.
+    ones other sessions have show a small dot, and picking one swaps the two.
+    All previews keep their full colour and crisp pixel edges.
   - **Return to Poke Ball**: put a pet away by hand and dismiss its current
     "is done" message. If it is still working, it stays in the ball until that
     work finishes or needs attention, then comes back out. A pet returned after
@@ -271,6 +272,8 @@ project, and the Poke Ball is FireRed's item ball from
 Game Freak's art, so they aren't included in this repo: the installers
 download them, for personal use. Both apps use the project's separate normal
 and shiny overworld palettes, sharing the same walking frames for both variants.
+Charmander and Squirtle use the same project's clearer icon artwork for their
+two front poses, with matching shiny colours. Their side and back poses are unchanged.
 
 Pokemon is a trademark of Nintendo, Game Freak and Creatures. Claude is a
 trademark of Anthropic. This is a fan project, not affiliated with or endorsed
