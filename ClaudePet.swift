@@ -172,6 +172,9 @@ struct SpriteSheet {
                 for i in 0..<2 { frames[i] = alignedFront(replacements[i], to: frames[i]) }
             }
         }
+        for (to, from) in frontPixelFixes[name] ?? [] {
+            for i in 0..<2 { frames[i] = withPixel(at: to, copiedFrom: from, in: frames[i]) ?? frames[i] }
+        }
         return make(frames)
     }
 
@@ -213,7 +216,15 @@ struct SpriteSheet {
     /// Pokémon whose front-facing frames come from PMD SpriteCollab instead,
     /// because the overworld sheet's front pose doesn't read well, with the
     /// height of each PMD frame.
-    static let frontFrameHeights = ["charmander": 32, "squirtle": 32, "pikachu": 40]
+    static let frontFrameHeights = ["charmander": 32, "squirtle": 32]
+
+    /// Hand fixes to the facing-you frames, each pixel taking the colour of another
+    /// in the same frame so shiny palettes still apply. Pikachu's eyes are a white
+    /// pixel over a black one, which reads as bug-eyed; they become 2×2 black eyes
+    /// with a glint at the top left, like its official art.
+    static let frontPixelFixes: [String: [(to: (x: Int, y: Int), from: (x: Int, y: Int))]] = [
+        "pikachu": [((14, 20), (13, 21)), ((14, 21), (13, 21)), ((17, 20), (13, 20)), ((17, 21), (13, 21)), ((18, 20), (13, 21))],
+    ]
 
     static func frames(in path: String, palette: [UInt8]? = nil, frameSize: Int? = nil, frameHeight: Int? = nil) -> [CGImage]? {
         let url = URL(fileURLWithPath: path)
@@ -278,13 +289,6 @@ struct SpriteSheet {
 
     static func alignedFront(_ replacement: CGImage, to original: CGImage) -> CGImage {
         let size = original.width
-        var replacement = replacement
-        // A taller PMD frame (Pikachu's are 40 high): keep the square that ends at its feet.
-        if replacement.width == size, replacement.height > size {
-            let y = max(0, min(replacement.height - size, Int(visibleBox(of: replacement).maxY) - size))
-            guard let square = replacement.cropping(to: CGRect(x: 0, y: y, width: size, height: size)) else { return original }
-            replacement = square
-        }
         guard replacement.width == size, replacement.height == size,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
@@ -301,6 +305,19 @@ struct SpriteSheet {
                   space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return original }
         return image
+    }
+
+    /// A frame with one pixel set to another pixel's colour.
+    static func withPixel(at to: (x: Int, y: Int), copiedFrom from: (x: Int, y: Int), in image: CGImage) -> CGImage? {
+        let w = image.width, h = image.height
+        guard (0..<w).contains(to.x), (0..<h).contains(to.y), (0..<w).contains(from.x), (0..<h).contains(from.y),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let pixels = context.data?.assumingMemoryBound(to: UInt32.self) else { return nil }
+        pixels[to.y * w + to.x] = pixels[from.y * w + from.x] // row 0 is the top row
+        return context.makeImage()
     }
 
     /// The first PLTE entry, which Gen 3 graphics treat as transparent.
@@ -3995,6 +4012,23 @@ let demoParty = ["charmander", "snorlax", "gengar", "ditto"]
 /// Pets with three subagents each (two working, one waiting on you), so the
 /// little ones under them can be checked by eye.
 @MainActor
+/// A pet's first frames side by side at 8x, for checking sprite edits.
+func renderFrames(of name: String, to path: String, count: Int = 6) {
+    guard let sheet = SpriteSheet.named(name) else { return }
+    let size = sheet.frames[0].width, zoom = 8, shown = min(count, sheet.frames.count)
+    let width = size * zoom * shown, height = size * zoom
+    guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+              space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+    context.setFillColor(CGColor(gray: 0.25, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.interpolationQuality = .none
+    for i in 0..<shown {
+        context.draw(sheet.frames[i], in: CGRect(x: i * size * zoom, y: 0, width: size * zoom, height: size * zoom))
+    }
+    guard let image = context.makeImage() else { return }
+    try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+}
+
 func renderBabies(to path: String, pokemon: [String] = [
     "pikachu", "snorlax", "charizard", "bulbasaur", "gengar", "eevee",
     "onix", "gyarados", "mewtwo", "squirtle", "dragonite", "chansey",
@@ -4368,6 +4402,10 @@ struct ClaudePet {
             arrangement.vertical = !args.contains("horizontal")
             if let corner = args.compactMap(Arrangement.Corner.init(rawValue:)).first { arrangement.corner = corner }
             renderDesktop(background: args[i + 1], to: args[i + 2], arrangement: arrangement)
+            return
+        }
+        if let i = args.firstIndex(of: "--render-frames"), i + 2 < args.count {
+            renderFrames(of: args[i + 1], to: args[i + 2])
             return
         }
         if let i = args.firstIndex(of: "--render-babies"), i + 1 < args.count {
