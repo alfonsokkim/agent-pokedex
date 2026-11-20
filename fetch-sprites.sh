@@ -41,7 +41,7 @@ while IFS= read -r name; do
   done
 done < "$names_tmp"
 
-for pair in charmander:0004 squirtle:0007; do
+for pair in charmander:0004 squirtle:0007 pikachu:0025; do
   name=${pair%%:*}
   number=${pair#*:}
   for variant in normal shiny; do
@@ -87,7 +87,7 @@ while IFS= read -r name; do
     fi
   done
 done < "$names_tmp"
-for name in charmander squirtle; do
+for name in charmander squirtle pikachu; do
   for variant in normal shiny; do
     if [[ ! -s "$dir/front/${name}_${variant}.png" ]]; then
       echo "missing: $name $variant front sprite" >&2

@@ -145,26 +145,45 @@ struct SpriteSheet {
     static func named(_ name: String, shiny: Bool = false) -> SpriteSheet? {
         let key = name + (shiny ? ":shiny" : ":normal")
         if let cached = cache[key] { return cached }
+        let sheet = load(name, shiny: shiny)
+        if let sheet { cache[key] = sheet }
+        return sheet
+    }
+
+    /// Whether a Pokémon's sprite files are there, without reading them.
+    static func exists(_ name: String) -> Bool {
+        if cache[name + ":normal"] != nil { return true }
+        let files = FileManager.default
+        return files.fileExists(atPath: "\(directory)/\(name).png")
+            && files.fileExists(atPath: "\(directory)/palettes/\(name)_normal.pal")
+    }
+
+    /// Reads a sheet from disk without keeping it, for callers that manage their own copies.
+    static func load(_ name: String, shiny: Bool = false) -> SpriteSheet? {
         let palettePath = "\(directory)/palettes/\(name)_\(shiny ? "shiny" : "normal").pal"
         guard let palette = SpritePalette.colors(in: palettePath),
               var frames = frames(in: "\(directory)/\(name).png", palette: palette), frames.count >= 6 else { return nil }
-        if ["charmander", "squirtle"].contains(name) {
+        if let frontHeight = frontFrameHeights[name] {
             let frontPath = "\(directory)/front/\(name)_\(shiny ? "shiny" : "normal").png"
             // PMD's first row faces down toward the viewer. Use its first two
             // walking poses and leave all existing side and back frames alone.
-            if let replacements = Self.frames(in: frontPath, frameSize: frames[0].width), replacements.count == 32 {
+            if let replacements = Self.frames(in: frontPath, frameSize: frames[0].width, frameHeight: frontHeight),
+               replacements.count == 32 {
                 for i in 0..<2 { frames[i] = alignedFront(replacements[i], to: frames[i]) }
             }
         }
+        return make(frames)
+    }
+
+    /// A sheet from frames, measuring their height, reach and visible boxes.
+    static func make(_ frames: [CGImage]) -> SpriteSheet {
         let boxes = frames.map(visibleBox)
         let extents = zip(frames, boxes).map { frame, box -> (top: Int, halfWidth: Int) in
             let half = frame.width / 2
             return box.isEmpty ? (frame.height, 0) : (Int(box.minY), max(half - Int(box.minX), Int(box.maxX) - half))
         }
-        let sheet = SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
-                                halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
-        cache[key] = sheet
-        return sheet
+        return SpriteSheet(frames: frames, top: extents.map(\.top).min() ?? 0,
+                           halfWidth: extents.map(\.halfWidth).max() ?? 0, boxes: boxes)
     }
 
     /// The smallest rectangle holding all of an image's visible pixels, in
@@ -191,7 +210,12 @@ struct SpriteSheet {
     }
 
     /// Decodes square frames and makes the background (palette entry 0) transparent.
-    static func frames(in path: String, palette: [UInt8]? = nil, frameSize: Int? = nil) -> [CGImage]? {
+    /// Pokémon whose front-facing frames come from PMD SpriteCollab instead,
+    /// because the overworld sheet's front pose doesn't read well, with the
+    /// height of each PMD frame.
+    static let frontFrameHeights = ["charmander": 32, "squirtle": 32, "pikachu": 40]
+
+    static func frames(in path: String, palette: [UInt8]? = nil, frameSize: Int? = nil, frameHeight: Int? = nil) -> [CGImage]? {
         let url = URL(fileURLWithPath: path)
         guard let data = try? Data(contentsOf: url),
               let source = CGImageSourceCreateWithData(data as CFData, nil),
@@ -243,16 +267,24 @@ struct SpriteSheet {
 
         guard let keyed = context.makeImage() else { return nil }
         let size = frameSize ?? image.height
-        guard size > 0, image.width.isMultiple(of: size), image.height.isMultiple(of: size) else { return nil }
-        return (0..<image.height / size).flatMap { row in
+        let height = frameHeight ?? size
+        guard size > 0, height > 0, image.width.isMultiple(of: size), image.height.isMultiple(of: height) else { return nil }
+        return (0..<image.height / height).flatMap { row in
             (0..<image.width / size).compactMap { column in
-                keyed.cropping(to: CGRect(x: column * size, y: row * size, width: size, height: size))
+                keyed.cropping(to: CGRect(x: column * size, y: row * height, width: size, height: height))
             }
         }
     }
 
     static func alignedFront(_ replacement: CGImage, to original: CGImage) -> CGImage {
         let size = original.width
+        var replacement = replacement
+        // A taller PMD frame (Pikachu's are 40 high): keep the square that ends at its feet.
+        if replacement.width == size, replacement.height > size {
+            let y = max(0, min(replacement.height - size, Int(visibleBox(of: replacement).maxY) - size))
+            guard let square = replacement.cropping(to: CGRect(x: 0, y: y, width: size, height: size)) else { return original }
+            replacement = square
+        }
         guard replacement.width == size, replacement.height == size,
               let space = CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
@@ -385,6 +417,14 @@ enum AgentBadge {
     }()
 }
 
+/// A subagent a Claude Code session started, shown as a little one under its pet.
+struct Subagent {
+    let id: String
+    let type: String    // Explore, general-purpose, ...
+    var status: String  // working or blocked
+    let started: Double
+}
+
 struct Agent {
     let pane: String
     let status: String // idle, working, blocked, done, unknown
@@ -400,11 +440,18 @@ struct Agent {
     /// Last real conversation activity, so an expired pet can return even after a fast reply.
     var activityAt: Double? = nil
     var activityRevision: String? = nil
+    /// Its running subagents, oldest first.
+    var subagents: [Subagent] = []
 
     var label: String {
-        guard !workspace.isEmpty else { return title.isEmpty ? project : "\(project): \(title)" }
+        // A chat named after its project or workspace adds nothing, so "root: root" is just "root".
+        func same(_ a: String, _ b: String) -> Bool {
+            a.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(b.trimmingCharacters(in: .whitespaces)) == .orderedSame
+        }
+        let shown = same(title, project) || (!workspace.isEmpty && same(title, workspace)) ? "" : title
+        guard !workspace.isEmpty else { return shown.isEmpty ? project : "\(project): \(shown)" }
         let scope = "[\(project)] [\(workspace)]"
-        return title.isEmpty ? scope : "\(scope): \(title)"
+        return shown.isEmpty ? scope : "\(scope): \(shown)"
     }
 }
 
@@ -466,10 +513,203 @@ func focus(_ agent: Agent) {
         Herdr.focus(agent.pane)
         return
     }
-    HookSessions.markSeen(String(agent.pane.dropFirst(HookSessions.prefix.count)))
-    let app = agent.app.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
-        ?? agent.pid.flatMap(hostApp(of:))
-    app?.activate()
+    let session = String(agent.pane.dropFirst(HookSessions.prefix.count))
+    HookSessions.markSeen(session)
+    let fallback = {
+        let app = agent.app.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0).first }
+            ?? agent.pid.flatMap(hostApp(of:))
+        app?.activate()
+    }
+    guard agent.app == Orca.bundleID else { return fallback() }
+    // Orca's CLI takes a moment, so find the chat off the main thread.
+    DispatchQueue.global().async {
+        if !Orca.open(session: session) { DispatchQueue.main.async(execute: fallback) }
+    }
+}
+
+// MARK: - Little ones
+
+/// What a pet's subagents look like: a chibi of the pet itself.
+enum Babies {
+    private static var chibis: [String: SpriteSheet] = [:]
+
+    /// The little one's art and name for a pet.
+    static func art(for pokemon: String, shiny: Bool) -> (sheet: SpriteSheet, name: String)? {
+        let key = pokemon + (shiny ? ":shiny" : ":normal")
+        let name = "Mini " + PokemonCatalog.displayName(for: pokemon)
+        if let cached = chibis[key] { return (cached, name) }
+        guard let parent = SpriteSheet.named(pokemon, shiny: shiny) ?? SpriteSheet.named(pokemon) else { return nil }
+        let sheet = SpriteSheet.make(parent.frames.map(chibi))
+        chibis[key] = sheet
+        return (sheet, name)
+    }
+
+    /// A chibi of a frame: the top of the body (mostly the head) kept whole,
+    /// the rest squashed to half its height, standing on the same ground.
+    static func chibi(_ frame: CGImage) -> CGImage {
+        let box = SpriteSheet.visibleBox(of: frame)
+        let w = frame.width, h = frame.height
+        let top = Int(box.minY), bottom = Int(box.maxY)
+        guard bottom - top >= 6,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let pixels = { context.draw(frame, in: CGRect(x: 0, y: 0, width: w, height: h))
+                             return context.data?.assumingMemoryBound(to: UInt8.self) }()
+        else { return frame }
+        let split = top + Int((Double(bottom - top) * 0.55).rounded())
+        var rows = Array(top..<split) + Array(stride(from: split, to: bottom, by: 2))
+        if rows.last != bottom - 1 { rows.append(bottom - 1) } // keep the feet
+        let start = bottom - rows.count
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        for (k, source) in rows.enumerated() {
+            let from = source * w * 4, to = (start + k) * w * 4
+            for i in 0..<w * 4 { bytes[to + i] = pixels[from + i] }
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                  space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+        else { return frame }
+        return image
+    }
+}
+
+// MARK: - Subagents
+
+/// A session's running subagents, one small file each so subagents started
+/// together don't overwrite one another. SubagentStart adds one, its tool
+/// events keep it current, and SubagentStop removes it.
+enum Subagents {
+    static let directory = HookSessions.directory + "/subagents"
+    /// A subagent quiet this long has most likely ended without saying so.
+    static let staleAfter: Double = 30 * 60
+
+    struct Record: Codable {
+        var id: String
+        var type: String
+        var status: String
+        var started: Double
+        var updated: Double
+    }
+
+    static func folder(_ session: String) -> String { "\(directory)/\(session)" }
+    static func url(_ session: String, _ id: String) -> URL { URL(fileURLWithPath: "\(folder(session))/\(id).json") }
+
+    static func record(session: String, id: String, type: String, status: String, at time: Double) {
+        let file = url(session, id)
+        var record = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(Record.self, from: $0) }
+            ?? Record(id: id, type: type, status: status, started: time, updated: 0)
+        guard time >= record.updated else { return } // an older hook finishing late
+        record.status = status
+        record.updated = time
+        if !type.isEmpty { record.type = type }
+        try? FileManager.default.createDirectory(atPath: folder(session), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(record).write(to: file, options: .atomic)
+    }
+
+    static func remove(session: String, id: String) {
+        try? FileManager.default.removeItem(at: url(session, id))
+    }
+
+    static func removeAll(session: String) {
+        try? FileManager.default.removeItem(atPath: folder(session))
+    }
+
+    /// The session's subagents still running, oldest first. Drops stale ones.
+    static func live(session: String, now: Double = Date().timeIntervalSince1970) -> [Subagent] {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: folder(session)) else { return [] }
+        var found: [Subagent] = []
+        for file in files where file.hasSuffix(".json") {
+            let path = URL(fileURLWithPath: "\(folder(session))/\(file)")
+            guard let record = (try? Data(contentsOf: path)).flatMap({ try? JSONDecoder().decode(Record.self, from: $0) })
+            else { continue }
+            if now - record.updated > staleAfter {
+                try? FileManager.default.removeItem(at: path)
+                continue
+            }
+            found.append(Subagent(id: record.id, type: record.type, status: record.status, started: record.started))
+        }
+        return found.sorted { ($0.started, $0.id) < ($1.started, $1.id) }
+    }
+}
+
+// MARK: - Orca
+
+/// Claude Code sessions running in Orca's terminals. The hooks record each
+/// session's Orca pane; Orca's CLI names the chat in that pane and switches to it.
+enum Orca {
+    static let bundleID = "com.stablyai.orca"
+
+    struct Chat {
+        let pane: String     // <tabId>:<leafId>
+        let name: String     // the chat's name in Orca's sidebar
+        let project: String  // the workspace's repo
+        let path: String     // the workspace's folder
+    }
+
+    static var cli: String? {
+        let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)?.path ?? "/Applications/Orca.app"
+        let path = app + "/Contents/Resources/bin/orca"
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    static var running: Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty }
+
+    static func json(_ args: [String]) -> [String: Any]? {
+        guard running, let cli, let data = capture(cli, args + ["--json"]),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["result"] as? [String: Any]
+    }
+
+    private static let lock = NSLock()
+    private static var cached: (at: Date, chats: [String: Chat])?
+
+    /// Every agent Orca knows, by pane key. Re-read at most every few seconds.
+    static func chats() -> [String: Chat] {
+        lock.lock()
+        if let cached, Date().timeIntervalSince(cached.at) < 3 { lock.unlock(); return cached.chats }
+        lock.unlock()
+        var chats: [String: Chat] = [:]
+        for workspace in json(["worktree", "ps"])?["worktrees"] as? [[String: Any]] ?? [] {
+            let path = workspace["path"] as? String ?? ""
+            let project = workspace["repo"] as? String ?? (path as NSString).lastPathComponent
+            for agent in workspace["agents"] as? [[String: Any]] ?? [] {
+                guard let pane = agent["paneKey"] as? String else { continue }
+                let name = [agent["displayName"], agent["conversationName"], agent["taskTitle"],
+                            (agent["activity"] as? [String: Any])?["title"]]
+                    .lazy.compactMap { $0 as? String }.first { !$0.isEmpty } ?? ""
+                chats[pane] = Chat(pane: pane, name: name, project: project, path: path)
+            }
+        }
+        lock.lock()
+        cached = (Date(), chats)
+        lock.unlock()
+        return chats
+    }
+
+    /// The chat a session runs in: by the pane its hooks recorded, or, for a
+    /// session that hasn't reported one yet, the only chat in its folder.
+    static func chat(for record: HookSessions.Record, in chats: [String: Chat]) -> Chat? {
+        if let pane = record.orcaPane { return chats[pane] }
+        let matches = chats.values.filter { record.cwd == $0.path || record.cwd.hasPrefix($0.path + "/") }
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    /// Switches Orca to the terminal a session runs in. False when it can't be found.
+    static func open(session: String) -> Bool {
+        guard let record = HookSessions.read(HookSessions.url(session)),
+              let pane = chat(for: record, in: chats())?.pane else { return false }
+        let parts = pane.split(separator: ":").map(String.init)
+        guard parts.count == 2,
+              let terminal = (json(["terminal", "list"])?["terminals"] as? [[String: Any]])?.first(where: {
+                  $0["tabId"] as? String == parts[0] && $0["leafId"] as? String == parts[1]
+              }),
+              let handle = terminal["handle"] as? String, let cli else { return false }
+        DispatchQueue.main.async { NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.activate() }
+        capture(cli, ["terminal", "switch", "--terminal", handle, "--json"])
+        return true
+    }
 }
 
 // MARK: - Claude app chats
@@ -904,6 +1144,7 @@ enum HookSessions {
         var herdrPane: String?  // set when the session runs inside herdr
         var transcript: String?
         var model: String?      // from SessionStart, when Claude Code includes it
+        var orcaPane: String?   // Orca's pane key, when the session runs in an Orca terminal
     }
 
     static func url(_ session: String) -> URL { URL(fileURLWithPath: "\(directory)/\(session).json") }
@@ -928,15 +1169,27 @@ enum HookSessions {
 
         if name == "SessionEnd" {
             try? FileManager.default.removeItem(at: url(session))
+            Subagents.removeAll(session: session)
+            return
+        }
+        // Events from inside a subagent carry its id. They update its little one, not the pet.
+        let agentID = (event["agent_id"] as? String).flatMap { $0.isEmpty || $0.contains("/") ? nil : $0 }
+        if name == "SubagentStop" {
+            if let agentID { Subagents.remove(session: session, id: agentID) }
             return
         }
         let status: String
         switch name {
         case "SessionStart", "StopFailure": status = "idle"
-        case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure": status = "working"
+        case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStart": status = "working"
         case "PermissionRequest", "Notification": status = "blocked" // Notification is matched to prompts only
         case "Stop": status = "done"
         default: return
+        }
+        if let agentID {
+            Subagents.record(session: session, id: agentID, type: event["agent_type"] as? String ?? "", status: status,
+                             at: started)
+            return
         }
 
         var record = read(url(session)) ?? Record(session: session, status: status, cwd: "", pid: nil,
@@ -952,6 +1205,7 @@ enum HookSessions {
         record.pid = claudePID()
         record.herdrPane = env["HERDR_PANE_ID"]
         record.app = record.herdrPane == nil ? env["__CFBundleIdentifier"] : nil
+        record.orcaPane = env["ORCA_PANE_KEY"].flatMap { $0.isEmpty ? nil : $0 } ?? record.orcaPane
         write(record)
     }
 
@@ -977,11 +1231,13 @@ enum HookSessions {
             let gone = record.pid.map { !isAlive($0) } ?? (now - record.updated > 86_400)
             if gone {
                 try? FileManager.default.removeItem(at: url)
+                Subagents.removeAll(session: record.session)
                 continue
             }
             if (record.status == "working" || record.status == "blocked") && wasInterrupted(record) {
                 record.status = "idle"
                 write(record)
+                Subagents.removeAll(session: record.session) // Esc stops its subagents without a SubagentStop
             }
             records.append(record)
         }
@@ -991,10 +1247,19 @@ enum HookSessions {
     /// The sessions to show as their own pets, oldest first: all of them, less
     /// the ones inside herdr while herdr is reporting them itself.
     static func agents(from records: [Record], herdrRunning: Bool) -> [Agent] {
-        records.filter { !($0.herdrPane != nil && herdrRunning) }.sorted { $0.started < $1.started }.map {
-            Agent(pane: prefix + $0.session, status: $0.status, title: "",
-                  project: ($0.cwd as NSString).lastPathComponent, app: $0.app, pid: $0.pid,
-                  activityAt: $0.updated)
+        let shown = records.filter { !($0.herdrPane != nil && herdrRunning) }.sorted { $0.started < $1.started }
+        let orca = shown.contains { $0.app == Orca.bundleID } ? Orca.chats() : [:]
+        return shown.map {
+            // Orca chats go by the name Orca's sidebar gives them, under their project.
+            let chat = $0.app == Orca.bundleID ? Orca.chat(for: $0, in: orca) : nil
+            let subagents = Subagents.live(session: $0.session)
+            // A subagent waiting on a permission needs you just as much as the session would.
+            let status = subagents.contains { $0.status == "blocked" } ? "blocked" : $0.status
+            var agent = Agent(pane: prefix + $0.session, status: status, title: chat?.name ?? "",
+                              project: chat?.project ?? ($0.cwd as NSString).lastPathComponent, app: $0.app, pid: $0.pid,
+                              activityAt: $0.updated)
+            agent.subagents = subagents
+            return agent
         }
     }
 
@@ -1600,6 +1865,92 @@ final class PetView: NSView {
     /// Resting out of sight, once it has gone into its ball.
     var isGone: Bool { mood == .stored && transition == nil }
 
+    // MARK: Little ones
+
+    /// The subagent under the mouse, when one is.
+    var hoveredBaby: Int? {
+        didSet { if hoveredBaby != oldValue { needsDisplay = true } }
+    }
+    private var babyCache: (key: String, art: (sheet: SpriteSheet, name: String)?)?
+    /// Its subagents' art, made once per Pokémon.
+    var babyArt: (sheet: SpriteSheet, name: String)? {
+        let key = pokemon + (isShiny ? ":shiny" : "")
+        if let babyCache, babyCache.key == key { return babyCache.art }
+        let art = Babies.art(for: pokemon, shiny: isShiny)
+        babyCache = (key, art)
+        return art
+    }
+    /// Little ones are two thirds the pet's size (2 points a pixel at medium).
+    static var babyScale: CGFloat { scale * 2 / 3 }
+    /// Between the pet's feet and the tops of the little ones' heads, leaving the working dots room.
+    static let babyGap: CGFloat = 14
+    /// The room the row of little ones takes under the pet: none without subagents.
+    var babyRoom: CGFloat {
+        guard !agent.subagents.isEmpty, let sheet = babyArt?.sheet else { return 0 }
+        return Self.babyGap + CGFloat(sheet.frames[0].height - sheet.top) * Self.babyScale + 2
+    }
+    /// Each little one's frame, left to right in a row centred under the pet,
+    /// closing up if the row is wider than the window.
+    var babyRects: [NSRect] {
+        guard !agent.subagents.isEmpty, let sheet = babyArt?.sheet else { return [] }
+        let count = agent.subagents.count
+        let size = CGFloat(sheet.frames[0].width) * Self.babyScale
+        let width = CGFloat(2 * max(sheet.halfWidth, 1)) * Self.babyScale
+        var step = width + 4
+        if count > 1 { step = min(step, (bounds.width - 16 - width) / CGFloat(count - 1)) }
+        let center = homeX + spriteSize / 2
+        let y = ground + Self.babyGap - CGFloat(sheet.top) * Self.babyScale
+        return (0..<count).map { i in
+            let x = center - CGFloat(count - 1) * step / 2 + CGFloat(i) * step
+            return NSRect(x: (x - size / 2).rounded(), y: y.rounded(), width: size, height: size)
+        }
+    }
+    /// How wide the row of little ones is, for lining pets up.
+    var babyRowWidth: CGFloat {
+        guard let first = babyRects.first, let last = babyRects.last, let sheet = babyArt?.sheet else { return 0 }
+        return last.maxX - first.minX - CGFloat(sheet.frames[0].width - 2 * sheet.halfWidth) * Self.babyScale
+    }
+
+    func babyIndex(at point: NSPoint) -> Int? {
+        guard let sheet = babyArt?.sheet, !isGone, !arriving, transition == nil else { return nil }
+        let box = sheet.boxes[0]
+        return babyRects.indices.last { i in
+            let rect = babyRects[i]
+            return NSRect(x: rect.minX + box.minX * Self.babyScale, y: rect.minY + box.minY * Self.babyScale,
+                          width: box.width * Self.babyScale, height: box.height * Self.babyScale).contains(point)
+        }
+    }
+
+    func babyIndex(atScreen point: NSPoint) -> Int? {
+        guard let window else { return nil }
+        return babyIndex(at: convert(window.convertPoint(fromScreen: point), from: nil))
+    }
+
+    /// The little ones: stepping in place while their subagent works, hopping
+    /// and flashing red when it's waiting on you.
+    func drawBabies() {
+        guard let sheet = babyArt?.sheet else { return }
+        for (i, (rect, baby)) in zip(babyRects, agent.subagents).enumerated() {
+            let beat = tick + i * 3 // out of step with each other
+            var frame = sheet.frames[0]
+            var lift: CGFloat = 0
+            switch baby.status {
+            case "blocked":
+                frame = sheet.frames[beat / 2 % 2]
+                lift = beat / 3 % 2 == 0 ? 0 : 5
+            default:
+                frame = sheet.frames[beat / 2 % 2]
+                lift = [0, 2, 3, 2][beat % 4]
+            }
+            let shown = rect.offsetBy(dx: 0, dy: -lift)
+            if baby.status == "blocked" && beat / 2 % 2 == 0 {
+                drawTinted(frame, in: shown, color: hitRed, amount: 0.85)
+            } else {
+                drawPixelSprite(frame, in: shown)
+            }
+        }
+    }
+
     init(agent: Agent, pokemon: String, sheet: SpriteSheet) {
         self.agent = agent
         self.pokemon = pokemon
@@ -1653,11 +2004,13 @@ final class PetView: NSView {
     }
 
     /// Matches the view and its window to the sprite, keeping the ground anchored.
-    func fitSize() {
-        let size = NSSize(width: Self.width, height: Self.height(for: sheet))
+    func fitSize(keepTop: Bool = false) {
+        let size = NSSize(width: Self.width, height: Self.height(for: sheet) + babyRoom)
         // Changing the content view alone leaves a larger sprite clipped by its old window.
         if let window, window.contentView === self {
-            window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+            var origin = window.frame.origin
+            if keepTop { origin.y = window.frame.maxY - size.height } // the pet stays put as its row comes and goes
+            window.setFrame(NSRect(origin: origin, size: size), display: true)
         }
         setFrameSize(size)
         needsDisplay = true
@@ -1741,7 +2094,7 @@ final class PetView: NSView {
 
     /// How much room the pet needs across, for lining up in a row: its sprite at
     /// its widest plus its pacing room.
-    var footprintWidth: CGFloat { CGFloat(2 * sheet.halfWidth) * Self.scale + 2 * pace }
+    var footprintWidth: CGFloat { max(CGFloat(2 * sheet.halfWidth) * Self.scale + 2 * pace, babyRowWidth) }
 
     /// Dismisses an existing completion, or waits in the ball for ongoing work to finish.
     @objc func returnToBall() {
@@ -1879,11 +2232,16 @@ final class PetView: NSView {
         case .sleeping, .stored: drawSnores(over: rect)
         default: break
         }
+        drawBabies()
         let headTop = rect.minY + CGFloat(sheet.top) * Self.scale
         drawContextBarIfShown(headTop: headTop)
         // One caption under the pet: its status while hovered (or just after it
         // needs you), otherwise "is done" when it has finished.
-        if hovering || Date() < labelUntil {
+        if hovering, let i = hoveredBaby, agent.subagents.indices.contains(i), let art = babyArt {
+            let baby = agent.subagents[i]
+            drawCaption("\(art.name) · \(baby.type.isEmpty ? "subagent" : baby.type)"
+                        + (baby.status == "blocked" ? " · needs you" : ""), badge: agent.kind, headTop: headTop)
+        } else if hovering || Date() < labelUntil {
             drawCaption(summary, badge: agent.kind, headTop: headTop)
         } else if mood == .done {
             drawCaption("\(name) is done", headTop: headTop)
@@ -1954,7 +2312,7 @@ final class PetView: NSView {
             let px = max(1, (Self.scale * 4 / 3).rounded() / 2)
             topAnchor = headTop - 3 - 7 * px
         }
-        let y = captionAbove && topAnchor != nil ? max(0, topAnchor! - height - 5) : ground + 2
+        let y = captionAbove && topAnchor != nil ? max(0, topAnchor! - height - 5) : ground + babyRoom + 2
         let pill = NSRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
         NSColor(white: 0.1, alpha: 0.85).setFill()
         NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
@@ -2198,7 +2556,8 @@ final class PetView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let superview else { return nil }
-        return hitBox.contains(convert(point, from: superview)) ? self : nil
+        let local = convert(point, from: superview)
+        return hitBox.contains(local) || babyIndex(at: local) != nil ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -2544,9 +2903,15 @@ final class PokemonGrid: NSView {
     var hovered: Int?
     var step = 0
     var timer: Timer?
+    /// Sheets for the rows near the visible ones, loaded as they scroll into
+    /// view and dropped once they're well out of it, so the picker never holds
+    /// every Pokémon at once.
+    private var sheets: [String: SpriteSheet] = [:]
+    /// Rows beyond the visible ones to keep loaded, above and below.
+    static let keptRows = 12
 
     init(names: [String] = roster, current: String, taken: Set<String>, onPick: @escaping (String) -> Void) {
-        self.names = names.filter { SpriteSheet.named($0) != nil }
+        self.names = names.filter(SpriteSheet.exists)
         self.current = current
         self.taken = taken
         self.onPick = onPick
@@ -2561,12 +2926,13 @@ final class PokemonGrid: NSView {
     override var isFlipped: Bool { true }
 
     func setNames(_ names: [String]) {
-        self.names = names.filter { SpriteSheet.named($0) != nil }
+        self.names = names.filter(SpriteSheet.exists)
         hovered = nil
         toolTip = nil
         step = 0
         let rows = (self.names.count + Self.columns - 1) / Self.columns
         setFrameSize(NSSize(width: frame.width, height: CGFloat(rows) * Self.cell.height + 2 * Self.padding))
+        unloadOffscreen()
         needsDisplay = true
     }
 
@@ -2578,7 +2944,33 @@ final class PokemonGrid: NSView {
 
     func index(at event: NSEvent) -> Int? {
         let point = convert(event.locationInWindow, from: nil)
-        return names.indices.first { cellRect($0).contains(point) }
+        let column = Int(floor((point.x - Self.padding) / Self.cell.width))
+        let row = Int(floor((point.y - Self.padding) / Self.cell.height))
+        guard point.x >= Self.padding, point.y >= Self.padding, (0..<Self.columns).contains(column) else { return nil }
+        let i = row * Self.columns + column
+        return names.indices.contains(i) ? i : nil
+    }
+
+    /// The Pokémon whose cells a rectangle of the grid touches.
+    func indices(in rect: NSRect) -> Range<Int> {
+        let first = max(0, Int(floor((rect.minY - Self.padding) / Self.cell.height)))
+        let last = max(first, Int(ceil((rect.maxY - Self.padding) / Self.cell.height)))
+        return min(names.count, first * Self.columns)..<min(names.count, last * Self.columns)
+    }
+
+    func sheet(_ name: String) -> SpriteSheet? {
+        if let sheet = sheets[name] { return sheet }
+        if let shared = SpriteSheet.cache[name + ":normal"] { return shared } // already loaded for a pet
+        let sheet = SpriteSheet.load(name)
+        sheets[name] = sheet
+        return sheet
+    }
+
+    /// Drops sheets for Pokémon far from what's on screen.
+    func unloadOffscreen() {
+        let margin = CGFloat(Self.keptRows) * Self.cell.height
+        let kept = Set(names[indices(in: visibleRect.insetBy(dx: 0, dy: -margin))])
+        sheets = sheets.filter { kept.contains($0.key) }
     }
 
     /// Steps the hovered sprite, in the menu's run loop mode so it moves while the menu is open.
@@ -2590,7 +2982,7 @@ final class PokemonGrid: NSView {
             MainActor.assumeIsolated {
                 guard let self, self.hovered != nil else { return }
                 self.step += 1
-                self.needsDisplay = true
+                self.redraw(self.hovered)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -2609,12 +3001,20 @@ final class PokemonGrid: NSView {
 
     func setHovered(_ i: Int?) {
         guard i != hovered else { return }
+        let previous = hovered
         hovered = i
         if let i, names.indices.contains(i), taken.contains(names[i]) {
             toolTip = "Used by another agent. Choosing it swaps the two Pokémon."
         } else { toolTip = nil }
         step = 0
-        needsDisplay = true
+        redraw(previous)
+        redraw(i)
+    }
+
+    /// Repaints one cell, not the whole grid.
+    func redraw(_ i: Int?) {
+        guard let i, names.indices.contains(i) else { return }
+        setNeedsDisplay(cellRect(i))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -2627,8 +3027,10 @@ final class PokemonGrid: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        for (i, name) in names.enumerated() {
-            guard let sheet = SpriteSheet.named(name) else { continue }
+        // Only the cells being repainted, loading their sheets as they appear.
+        for i in indices(in: dirtyRect) {
+            let name = names[i]
+            guard let sheet = sheet(name) else { continue }
             let cell = cellRect(i).insetBy(dx: 2, dy: 2)
             if name == current {
                 NSColor.controlAccentColor.withAlphaComponent(0.3).setFill()
@@ -2660,6 +3062,7 @@ final class PokemonGrid: NSView {
             let width = label.size(withAttributes: attrs).width
             label.draw(at: NSPoint(x: cell.midX - width / 2, y: cell.minY + 64), withAttributes: attrs)
         }
+        if sheets.count > (2 * Self.keptRows + 12) * Self.columns { unloadOffscreen() }
     }
 }
 
@@ -2751,13 +3154,15 @@ func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangemen
                               : visible.maxX - stackMargin - pets[0].spriteSize / 2 - steps.reduce(0, +)]
         for step in steps { centers.append(centers.last! + step) }
 
-        let ground = arrangement.atTop ? visible.maxY - stackTop - heights.max()! : visible.minY + stackBase + 4
+        let ground = arrangement.atTop ? visible.maxY - stackTop - heights.max()!
+                                       : visible.minY + stackBase + 4 + pets.map(\.babyRoom).max()!
         return zip(pets, centers).map { pet, center in
-            NSPoint(x: panelX(pet, spriteLeft: center - pet.spriteSize / 2), y: ground - PetView.bottomPad)
+            NSPoint(x: panelX(pet, spriteLeft: center - pet.spriteSize / 2), y: ground - PetView.bottomPad - pet.babyRoom)
         }
     }
 
     let room = visible.height - stackBase - stackTop - heights.reduce(0, +) - CGFloat(pets.count) * PetView.captionDepth
+        - pets.map(\.babyRoom).reduce(0, +)
     // Too tall for the screen even with no gap: they close up and overlap a little rather than run off it.
     let gap = pets.count > 1 ? min(stackGap, room / CGFloat(pets.count - 1)) : 0
     // Reserve the widest visible footprint, including pacing, so larger sheets
@@ -2771,15 +3176,18 @@ func stackOrigins(_ pets: [PetView], in visible: NSRect, arrangement: Arrangemen
         // Top down from just under the menu bar.
         var ground = visible.maxY - stackTop - heights[0]
         for (i, pet) in pets.enumerated() {
-            origins.append(NSPoint(x: x(pet), y: ground - PetView.bottomPad))
-            if i + 1 < pets.count { ground -= PetView.captionDepth + gap + heights[i + 1] }
+            origins.append(NSPoint(x: x(pet), y: ground - PetView.bottomPad - pet.babyRoom))
+            if i + 1 < pets.count { ground -= pet.babyRoom + PetView.captionDepth + gap + heights[i + 1] }
         }
     } else {
         // Bottom up from just above the prompt box.
-        var ground = visible.minY + stackBase + 4
-        for pet in pets.reversed() {
-            origins.append(NSPoint(x: x(pet), y: ground - PetView.bottomPad))
-            ground += pet.visibleHeight + gap + PetView.captionDepth // the next pet's caption room
+        // Each pet's little ones sit under it, so its ground is that much higher.
+        var ground = visible.minY + stackBase + 4 + pets[pets.count - 1].babyRoom
+        for i in pets.indices.reversed() {
+            let pet = pets[i]
+            origins.append(NSPoint(x: x(pet), y: ground - PetView.bottomPad - pet.babyRoom))
+            // The next pet's caption and little ones' room.
+            if i > 0 { ground += pet.visibleHeight + gap + PetView.captionDepth + pets[i - 1].babyRoom }
         }
         origins.reverse()
     }
@@ -2793,10 +3201,10 @@ func keepOnScreen(_ pets: [PetView], _ origins: [NSPoint], in visible: NSRect) -
     guard !pets.isEmpty else { return origins }
     // What each one covers: from the top of its head down to its caption, as wide as it reaches.
     let covered = zip(pets, origins).map { pet, origin -> NSRect in
-        let ground = origin.y + PetView.bottomPad
+        let ground = origin.y + PetView.bottomPad + pet.babyRoom
         let middle = origin.x + pet.homeX + pet.spriteSize / 2
-        return NSRect(x: middle - pet.footprintWidth / 2, y: ground - PetView.captionDepth,
-                      width: pet.footprintWidth, height: pet.visibleHeight + PetView.captionDepth)
+        return NSRect(x: middle - pet.footprintWidth / 2, y: ground - PetView.captionDepth - pet.babyRoom,
+                      width: pet.footprintWidth, height: pet.visibleHeight + PetView.captionDepth + pet.babyRoom)
     }
     let all = covered.dropFirst().reduce(covered[0]) { $0.union($1) }
     var dx: CGFloat = 0, dy: CGFloat = 0
@@ -3056,14 +3464,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if (newActivity || newRevision) && pet.mood == .stored {
                     pet.resumeForActivity()
                 }
+                let hadBabies = !pet.agent.subagents.isEmpty
                 pet.update(agent)
+                if hadBabies == agent.subagents.isEmpty { // its row of little ones came or went
+                    pet.fitSize(keepTop: true)
+                    changed = true
+                }
                 continue
             }
             guard let name = pokemon(for: agent.pane), let sheet = SpriteSheet.named(name) else { continue }
             let pet = PetView(agent: agent, pokemon: name, sheet: sheet)
             pet.onMoved = { [weak self] pet in
                 guard let origin = pet.window?.frame.origin else { return }
-                self?.positions[pet.pokemon] = NSStringFromPoint(origin)
+                self?.positions[pet.pokemon] = NSStringFromPoint(NSPoint(x: origin.x, y: origin.y + pet.babyRoom))
             }
             pet.onChoosePokemon = { [weak self] pet, name in self?.choose(name, for: pet) }
             pet.onDragAll = { [weak self] offset in self?.dragAll(by: offset) }
@@ -3083,6 +3496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Set(self?.pets.values.filter { $0 !== pet }.map(\.pokemon) ?? [])
             }
             pet.update(agent)
+            pet.fitSize()
             if let since = storedHistory.storedSince[agent.pane],
                agent.status != "working", agent.status != "blocked", (agent.activityAt ?? 0) <= since,
                agent.activityRevision == nil || agent.activityRevision == storedHistory.storedRevisions[agent.pane] {
@@ -3259,8 +3673,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Where a pet was dragged to, if it's still on a screen: judged by the
     /// middle of the pet, since its window hangs well past it on every side.
     func draggedSpot(of pet: PetView) -> NSPoint? {
-        guard let point = positions[pet.pokemon].map(NSPointFromString) else { return nil }
-        let middle = NSPoint(x: point.x + pet.frame.width / 2, y: point.y + PetView.bottomPad + pet.visibleHeight / 2)
+        guard let saved = positions[pet.pokemon].map(NSPointFromString) else { return nil }
+        let point = NSPoint(x: saved.x, y: saved.y - pet.babyRoom)
+        let middle = NSPoint(x: point.x + pet.frame.width / 2, y: point.y + PetView.bottomPad + pet.babyRoom + pet.visibleHeight / 2)
         return NSScreen.screens.contains { $0.frame.contains(middle) } ? point : nil
     }
 
@@ -3382,11 +3797,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var found = false
         for pane in order {
             guard let pet = pets[pane], let panel = panels[pane] else { continue }
-            let over = !found && !PetPanel.allHidden && !pet.isGone && !pet.arriving
-                && pet.screenHitBox?.contains(mouse) == true
+            let eligible = !found && !PetPanel.allHidden && !pet.isGone && !pet.arriving
+            let baby = eligible ? pet.babyIndex(atScreen: mouse) : nil
+            let over = eligible && (pet.screenHitBox?.contains(mouse) == true || baby != nil)
             found = found || over
             panel.mouseOver = over
             pet.hovering = over
+            pet.hoveredBaby = over ? baby : nil
         }
     }
 
@@ -3574,6 +3991,52 @@ func drawMockTerminal(centeredIn canvas: NSSize) {
 /// The four agents in the mock screenshot, top to bottom. The picker render
 /// shows the same party, as if you'd right-clicked Gengar.
 let demoParty = ["charmander", "snorlax", "gengar", "ditto"]
+
+/// Pets with three subagents each (two working, one waiting on you), so the
+/// little ones under them can be checked by eye.
+@MainActor
+func renderBabies(to path: String, pokemon: [String] = [
+    "pikachu", "snorlax", "charizard", "bulbasaur", "gengar", "eevee",
+    "onix", "gyarados", "mewtwo", "squirtle", "dragonite", "chansey",
+]) {
+    PetView.recordsActivity = false
+    let columns = 4
+    let pets: [PetView] = pokemon.enumerated().compactMap { i, name in
+        guard let sheet = SpriteSheet.named(name) else { return nil }
+        var agent = Agent(pane: "demo:\(i)", status: "working", title: "", project: "demo")
+        agent.subagents = ["working", "working", "blocked"].enumerated().map {
+            Subagent(id: "\($0.offset)", type: "Explore", status: $0.element, started: Double($0.offset))
+        }
+        let pet = PetView(agent: agent, pokemon: name, sheet: sheet)
+        pet.mood = .idle
+        pet.tick = 1
+        pet.fitSize()
+        return pet
+    }
+    let cell = NSSize(width: PetView.width, height: pets.map(\.frame.height).max() ?? 200)
+    let rows = (pets.count + columns - 1) / columns
+    let size = NSSize(width: cell.width * CGFloat(columns), height: cell.height * CGFloat(rows))
+    guard let canvas = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ), let context = NSGraphicsContext(bitmapImageRep: canvas) else { return }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    NSColor(white: 0.93, alpha: 1).setFill()
+    NSRect(origin: .zero, size: size).fill()
+    context.imageInterpolation = .none
+    for (i, pet) in pets.enumerated() {
+        guard let rep = pet.bitmapImageRepForCachingDisplay(in: pet.bounds) else { continue }
+        pet.cacheDisplay(in: pet.bounds, to: rep)
+        let origin = NSPoint(x: CGFloat(i % columns) * cell.width,
+                             y: size.height - CGFloat(i / columns + 1) * cell.height + (cell.height - pet.frame.height))
+        rep.draw(in: NSRect(origin: origin, size: pet.bounds.size), from: .zero, operation: .sourceOver,
+                 fraction: 1, respectFlipped: false, hints: [.interpolation: NSImageInterpolation.none.rawValue])
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    try? canvas.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+}
 
 /// A generation's Pokémon picker on white for visual regression checks.
 @MainActor
@@ -3905,6 +4368,10 @@ struct ClaudePet {
             arrangement.vertical = !args.contains("horizontal")
             if let corner = args.compactMap(Arrangement.Corner.init(rawValue:)).first { arrangement.corner = corner }
             renderDesktop(background: args[i + 1], to: args[i + 2], arrangement: arrangement)
+            return
+        }
+        if let i = args.firstIndex(of: "--render-babies"), i + 1 < args.count {
+            renderBabies(to: args[i + 1])
             return
         }
         if let i = args.firstIndex(of: "--render-picker"), i + 1 < args.count {

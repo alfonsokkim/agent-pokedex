@@ -16,6 +16,8 @@ const EVENTS = {
   Stop: null,
   StopFailure: null,
   SessionEnd: null,
+  SubagentStart: null,
+  SubagentStop: null,
 };
 
 function run([path, binary, mode]) {
